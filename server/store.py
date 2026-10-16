@@ -42,12 +42,18 @@ def read_json(path, fallback):
 
 
 def write_json(path, data) -> None:
-    """原子写 JSON：同目录临时文件 + os.replace。"""
+    """原子写 JSON：同目录临时文件 + os.replace。
+
+    `newline="\\n"` 是**故意的**：文本模式下 Windows 会把 `\\n` 翻译成 `\\r\\n`，
+    于是同一份数据在 Windows 和 Linux 上字节不同。这不只是难看——水位线存的是
+    **字节位置**，把 data 目录整拷到另一个平台继续用，偏移就会错位。
+    数据是你的，那就该"拷到哪都一样"。
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(data, ensure_ascii=False, indent=2))
         os.replace(tmp, p)  # 同盘原子
     except BaseException:
@@ -66,11 +72,14 @@ def append_jsonl(path, obj) -> None:
 
     用 O_APPEND 打开：同一进程内多线程追加不会互相覆盖（行要小，
     实际用到的都是几百字节的对话事件）。
+
+    `newline="\\n"` 的理由和 `write_json` 一样：别让平台把行尾悄悄改掉。
+    水位线是按字节算的，行尾差一个字节就不一致了。
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(obj, ensure_ascii=False).replace("\n", " ") + "\n"
-    with p.open("a", encoding="utf-8") as f:
+    with p.open("a", encoding="utf-8", newline="\n") as f:
         f.write(line)
         f.flush()
         os.fsync(f.fileno())

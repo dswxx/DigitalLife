@@ -191,7 +191,7 @@ class Life:
         # 而 index_text() 会把它原样塞进系统提示词里。
         idx = root / "memory" / "INDEX.md"
         if not idx.exists():
-            idx.write_text("", encoding="utf-8")
+            idx.write_text("", encoding="utf-8", newline="\n")
         return Life(id=hid, root=root, identity=identity)
 
     @staticmethod
@@ -338,7 +338,7 @@ class Life:
             mem = Memory(id=mid, name=name, desc=desc, type=type, scope=scope,
                          at=at or now_ms(), source=source, text=text)
         self.memory_dir().mkdir(parents=True, exist_ok=True)
-        (self.memory_dir() / f"{mid}.md").write_text(mem.to_markdown(), encoding="utf-8")
+        (self.memory_dir() / f"{mid}.md").write_text(mem.to_markdown(), encoding="utf-8", newline="\n")
         self.rebuild_index()
         return mem
 
@@ -369,7 +369,7 @@ class Life:
 
     def rebuild_index(self) -> None:
         lines = [m.index_line() for m in self.memories()]
-        self.index_path().write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        self.index_path().write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8", newline="\n")
 
     # ── 供 Context 组装用 ──
     def summaries(self, *, exclude_session: str | None = None) -> list[dict]:

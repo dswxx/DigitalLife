@@ -2,8 +2,24 @@
 # 老项目就是这么守的，跨平台的时候省掉一整类"只有某人机器上能跑"的问题。
 * text=auto eol=lf
 
+# ── 例外：Windows 上双击就能跑的那些 ──
+# 批处理文件必须 CRLF（cmd.exe 对 LF 结尾的 .cmd 在个别语法上有坑，
+# 而且它按 **OEM 代码页**读文件——文件本身是 UTF-8 的中文会被解码错、
+# 把后一个 token 的头几个字符吃掉，报出 "'o' 不是内部或外部命令" 这种怪东西。
+# 所以 .cmd 里只许写 ASCII（中文交给 Python 打印），并且强制 CRLF。
+# dev/test_docs.py 会盯着这两条。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
 # 二进制，别动
 *.png binary
 *.jpg binary
+*.jpeg binary
+*.gif binary
 *.ico binary
 *.woff2 binary
+*.zip binary
+
+# 锁文件不算代码，别在 diff 里出现
+web/package-lock.json -diff

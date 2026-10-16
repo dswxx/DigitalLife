@@ -1,6 +1,6 @@
 {
   "name": "roundtable-web",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "圆桌的前端：数字人库、圆桌对话、记忆编辑器、一生时间线",

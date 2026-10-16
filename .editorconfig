@@ -1,0 +1,35 @@
+# 编辑器统一配置：免得各人保存出不同的换行和编码。
+# 这一条不是洁癖——前面真栽过一次：批处理文件里写中文，cmd.exe 按 GBK 读 UTF-8，
+# 把"echo"吃成了"o"，双击启动器直接报错。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Python 是这个项目的主要语言，缩进 4 空格
+[*.py]
+indent_size = 4
+
+# Windows 上双击就能跑的那些：必须 CRLF，而且**只许 ASCII**
+# （cmd.exe 按 OEM 代码页读它们，中文会被解码错、吃掉后面的字符）
+[*.{cmd,bat}]
+end_of_line = crlf
+charset = ascii
+
+[*.ps1]
+end_of_line = crlf
+
+# Markdown 里行尾两个空格是"换行"，别被编辑器吃掉
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[LICENSE]
+insert_final_newline = true

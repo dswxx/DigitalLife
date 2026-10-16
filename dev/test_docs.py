@@ -124,6 +124,48 @@ def main() -> int:
     check(pkg.get("version") == __version__,
           f"前端 package.json 的版本（{pkg.get('version')}）和后端一致")
 
+    # ── 6. Windows 启动脚本 ──
+    #
+    # 这一节是被一次真实的双击失败逼出来的：启动器里写了中文，而 cmd.exe
+    # 按 **OEM 代码页**（中文 Windows 上是 936）读文件、文件本身是 UTF-8，
+    # 于是"echo"被解码成一个多字节字符的尾巴 + "o"，报出
+    # "'o' 不是内部或外部命令" —— 离真正的原因十万八千里。
+    print("\n── Windows 启动脚本 ──")
+    for name in ("启动圆桌.cmd",):
+        raw = (ROOT / name).read_bytes()
+        high = [b for b in raw if b > 127]
+        check(not high, f"{name} 是纯 ASCII（cmd.exe 按 GBK 读 UTF-8 会吃字符，"
+                        f"中文必须交给 Python 打印）")
+        check(b"\r\n" in raw or raw.count(b"\n") == 0, f"{name} 用的是 CRLF")
+    attrs = read(".gitattributes")
+    check("*.cmd text eol=crlf" in attrs, ".gitattributes 声明了 .cmd 用 CRLF 检出")
+    check((ROOT / ".editorconfig").exists(), "有 .editorconfig（免得各人编辑器存出不同的换行/编码）")
+
+    # ── 7. 不该有的编码痕迹 ──
+    print("\n── 编码 ──")
+    # 只看**源码和文档**：data/ 是运行时产物（老数据里本来就有 CRLF 的文件，
+    # 而且水位线是按字节算的，**不能**回头去改它），dev/.tmp* 是测试草稿
+    skip_exact = {"node_modules", ".git", "dist", "data"}
+
+    def skipped(p) -> bool:
+        return any(part in skip_exact or part.startswith(".tmp") for part in p.parts)
+
+    boms = []
+    crlf = []
+    for p in ROOT.rglob("*"):
+        if not p.is_file() or skipped(p):
+            continue
+        if p.suffix not in (".py", ".ts", ".vue", ".md", ".json", ".css", ".html", ".yml", ".yaml", ".cmd"):
+            continue
+        raw = p.read_bytes()
+        if raw[:3] == b"\xef\xbb\xbf":
+            boms.append(p.name)
+        if p.suffix != ".cmd" and b"\r\n" in raw:
+            crlf.append(str(p.relative_to(ROOT)))
+    check(not boms, "没有源码/文档带 UTF-8 BOM" + (f"：{boms}" if boms else ""))
+    check(not crlf, "除了 .cmd 之外没有源码/文档是 CRLF（.gitattributes 定了 LF）" +
+          (f"：{crlf[:5]}" if crlf else ""))
+
     print(f"\n{'=' * 46}\n通过 {passed}，失败 {failed}")
     return 1 if failed else 0
 
