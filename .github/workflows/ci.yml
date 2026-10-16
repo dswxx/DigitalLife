@@ -157,7 +157,10 @@ jobs:
           fi
           echo "源码里没有真实密钥 ✅"
 
-      - name: 确认 data/ 还在 .gitignore 第一条
+      - name: 确认 data/ 还在 .gitignore 里（而且是第一条规则）
         run: |
-          head -1 .gitignore | grep -q '^data/' || { echo "::error::data/ 不再是 .gitignore 的第一条"; exit 1; }
-          echo "data/ 仍然是第一条 ✅"
+          grep -q '^data/' .gitignore || { echo "::error::data/ 不在 .gitignore 里"; exit 1; }
+          # 第一条**规则**（跳过注释和空行）必须就是 data/
+          first=$(grep -v '^#' .gitignore | grep -v '^[[:space:]]*$' | head -1)
+          [ "$first" = "data/" ] || { echo "::error::data/ 不再是第一条规则（现在第一条是：$first）"; exit 1; }
+          echo "data/ 仍然是第一条规则 ✅"
