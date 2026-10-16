@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>圆桌 Roundtable</title>
+    <!--
+      这一行是**启动数据占位符**：服务端每次启动时把 /*__RT_BOOT__*/ 换成
+      {"apiVersion":…,"token":"…"}。令牌是每次启动随机生成的，不可能打进前端产物里。
+
+      注意占位符**必须顶替整个值**（所以后面跟一个 null 只是为了让这个文件本身
+      也是合法 JS）。写成 `= {/*__RT_BOOT__*/}` 的话，替换完会变成 `={{…}}`——
+      双层花括号，整段脚本直接语法错误，前端连不上后端。
+    -->
+    <script>
+      window.__RT_BOOT__ = /*__RT_BOOT__*/null;
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

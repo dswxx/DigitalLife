@@ -82,6 +82,15 @@ def main() -> int:
         print(f"（{args.port} 端口被占了，换成了 {port}）")
     print(f"  数据目录：{data_dir}")
     print("  只监听本机，外网访问不到。关掉这个窗口就是停服务。")
+    if not (Path(__file__).resolve().parent / "web" / "dist" / "index.html").exists():
+        # 没构建过前端就直接说清楚怎么构建——不然用户打开看到的是一张提示页，
+        # 还得自己回头翻文档才知道差哪一步
+        print()
+        print("  前端还没构建，所以现在打开只有一张提示页。构建一次就好：")
+        print("      cd web")
+        print("      npm install")
+        print("      npm run build")
+        print("  （之后正常启动不用再构建）")
     print()
 
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning",

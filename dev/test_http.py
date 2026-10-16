@@ -170,8 +170,17 @@ def main() -> int:
             r = c.get(f"{base}/")
             check(r.status_code == 200 and TOKEN in r.text,
                   "根路径把令牌注进了 HTML（前端就是从这里拿到它的）")
-            check("圆桌后端已经起来了" in r.text,
-                  "而且明确说了前端还没构建——不是给一个白屏让人猜")
+
+        # 前端还没构建时：给一张**说清楚**的提示页，而不是白屏
+        print("\n── 前端还没构建时的兜底页 ──")
+        real_web = appmod.WEB_DIR
+        appmod.WEB_DIR = root / "no-such-web"  # 只影响这个测试进程
+        with httpx.Client(timeout=20) as c:
+            r = c.get(f"{base}/")
+            check(r.status_code == 200 and "还没构建" in r.text,
+                  "明确说了前端还没构建——不是给一个白屏让人猜")
+            check(TOKEN in r.text, "兜底页里也注了令牌（想直接调接口也能用）")
+        appmod.WEB_DIR = real_web
 
         # 前端构建产物存在时，占位符必须被换成真正的启动数据
         print("\n── 构建产物里的启动数据注入 ──")
@@ -179,15 +188,17 @@ def main() -> int:
         web.mkdir(parents=True, exist_ok=True)
         (web / "index.html").write_text(
             "<!doctype html><title>圆桌</title>"
-            "<script>window.__RT_BOOT__ = {/*__RT_BOOT__*/};</script>"
+            "<script>window.__RT_BOOT__ = /*__RT_BOOT__*/null;</script>"
             "<div id=app></div>",
             encoding="utf-8")
         appmod.WEB_DIR = web  # 只影响这个测试进程
         with httpx.Client(timeout=20) as c:
             r = c.get(f"{base}/")
-            check(appmod.BOOT_PLACEHOLDER not in r.text, "占位符被替换掉了")
-            check("window.__RT_BOOT__ = {" in r.text, "而且属性名没被误替换（占位符和属性名不能撞）")
-            check(TOKEN in r.text and '"apiVersion"' in r.text, "启动数据里有令牌和接口版本")
+            check(appmod.BOOT_PLACEHOLDER not in r.text, "占位符被整串替换掉了（连兜底值一起）")
+            check('"apiVersion"' in r.text and "= {" in r.text, "注入的是一个合法的对象字面量")
+            check("{{" not in r.text, "**没有变成双层花括号**（那会让整段内联脚本语法错误）")
+            check("}null" not in r.text, "**也没有留下兜底的尾巴**（同上，症状都是白屏）")
+            check(TOKEN in r.text, "启动数据里有令牌")
             check("<div id=app>" in r.text, "页面其余部分原样保留")
             check(c.get(f"{base}/不存在的路由").text.find("id=app") > 0,
                   "单页应用：认不出的路径也交给前端自己路由")

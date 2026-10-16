@@ -70,9 +70,10 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             body = {}
         with LOCK:
-            REQUESTS.append({"path": self.path, "headers": dict(self.headers), "body": body,
-                             "started": time.time(), "ended": 0.0})
-            my_index = len(REQUESTS) - 1
+            record = {"path": self.path, "headers": dict(self.headers), "body": body,
+                      "started": time.time(), "ended": 0.0}
+            REQUESTS.append(record)  # 记住**这个对象本身**，别记下标——
+                                     # 测试中途 mock.reset() 会清空列表，下标就失效了
 
         model = body.get("model") or ""
         script = SCRIPT.get(model, {})
@@ -140,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
             if delay:
                 time.sleep(delay)  # 慢一点，好让并发的两个席位真的重叠在一起
         with LOCK:
-            REQUESTS[my_index]["ended"] = time.time()
+            record["ended"] = time.time()
         if script.get("stall_after"):
             time.sleep(float(script["stall_after"]))  # 验"连接开着但不再发数据"
 

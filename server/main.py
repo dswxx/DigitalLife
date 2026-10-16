@@ -36,17 +36,31 @@ API_VERSION = 4
 
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1", "testserver"}
 
-DATA_DIR = Path("data")
-WEB_DIR = Path("web/dist")
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+WEB_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
 TOKEN = secrets.token_urlsafe(24)
 
-# 前端 index.html 里要放这个注释当占位符（**不要**用光秃秃的 __RT_BOOT__，
-# 那会和 `window.__RT_BOOT__ = ...` 里的属性名撞车，replace 时把属性名也换掉了）：
+# 前端 index.html 里要放这一串当占位符，**它把兜底值一起包含进去**：
 #
-#     <script>window.__RT_BOOT__ = {/*__RT_BOOT__*/};</script>
+#     <script>window.__RT_BOOT__ = /*__RT_BOOT__*/null;</script>
 #
-# 服务端把它换成真正的启动数据（含每次启动随机生成的令牌）。
-BOOT_PLACEHOLDER = "/*__RT_BOOT__*/"
+# 服务端把它整串换成真正的启动数据（含每次启动随机生成的令牌），结果是
+# `window.__RT_BOOT__ = {"apiVersion":…};`。没被注入时那行也是合法 JS（值为 null）。
+#
+# 三个坑，前两个都踩过：
+#   · 不能用光秃秃的 `__RT_BOOT__`——`window.__RT_BOOT__ = ...` 里的属性名会一起被换掉
+#   · 占位符不能只包注释（`= /*__RT_BOOT__*/null;` 这种）——只换注释的话会剩一个
+#     尾巴 `null`，变成 `= {…}null;`，整段内联脚本语法错误
+#   · 占位符更不能写在花括号**里面**（`= {/*__RT_BOOT__*/}`）——替换完是 `={{…}}`
+#
+# 这两种错的症状一模一样：**前端白屏 + 说连不上后端**，而报错在浏览器控制台里，
+# 离真正的原因很远。所以 test_http.py 里专门钉了"不能出现 {{ 或 }null"。
+BOOT_PLACEHOLDER = "/*__RT_BOOT__*/null"
+
+# 那份 HTML **永远不许被浏览器缓存**：它带着"这次启动"的令牌。
+# 缓存住的话，服务重启一次（令牌变了）浏览器还在用旧的——表现是"突然连不上后端"，
+# 而真正的原因和现象离得很远。带哈希的 JS/CSS 相反，可以放心长期缓存。
+NO_STORE = {"cache-control": "no-store"}
 
 
 def _data_dir(request: Request) -> Path:
@@ -98,7 +112,11 @@ def _summary(data_dir: Path, life: Life) -> dict:
 
 
 def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
-    """建应用。`data_dir`/`token` 可以注入——测试要用临时目录和固定 token。"""
+    """建应用。`data_dir`/`token` 可以注入——测试要用临时目录和固定 token。
+
+    `data_dir` 默认是**项目里的 data/**（按本文件位置算，不按当前目录算）——
+    否则从别处启动、或者被别的东西改了 cwd，数据就会跑到别的地方去。
+    """
     app = FastAPI(title="圆桌 Roundtable", docs_url=None, redoc_url=None)
     app.state.token = token or TOKEN
     app.state.data_dir = Path(data_dir) if data_dir else DATA_DIR
@@ -519,7 +537,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.get("/")
     def index(request: Request):
-        return HTMLResponse(_serve_index(request.app.state.token))
+        return HTMLResponse(_serve_index(request.app.state.token), headers=NO_STORE)
 
     @app.get("/{path:path}")
     def static_files(request: Request, path: str):
@@ -532,9 +550,12 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
             # 报出来的错会离真正的原因十万八千里。
             if path.startswith("api/"):
                 raise HTTPException(404, f"没有这个接口：/{path}")
-            return HTMLResponse(_serve_index(request.app.state.token))
+            return HTMLResponse(_serve_index(request.app.state.token), headers=NO_STORE)
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-        return StreamingResponse(iter([target.read_bytes()]), media_type=ctype)
+        # 带哈希的产物可以放心缓存；HTML 不行（理由见 NO_STORE）
+        cache = "public, max-age=31536000, immutable" if "/assets/" in str(target) else "no-store"
+        return StreamingResponse(iter([target.read_bytes()]), media_type=ctype,
+                                 headers={"cache-control": cache})
 
     return app
 

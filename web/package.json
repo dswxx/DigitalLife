@@ -1,0 +1,21 @@
+{
+  "name": "roundtable-web",
+  "private": true,
+  "type": "module",
+  "description": "圆桌的前端：数字人库、圆桌对话、记忆编辑器、一生时间线",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "pinia": "^4.1.0",
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vue-tsc": "^3.3.13"
+  }
+}

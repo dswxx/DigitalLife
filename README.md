@@ -6,7 +6,7 @@
 
 ## 现在到哪一步了
 
-**后端已经能跑起来、能真流式对话了。** 前端还没开始（下一步）。
+**前后端都能跑了。** 后端能真流式对话，前端能看库、能聊天、能编辑记忆、能看"一生"。
 
 | 层 | 文件 | 状态 |
 |---|---|---|
@@ -21,21 +21,24 @@
 | 适配器 | `server/adapters/` | ✅ OpenAI 兼容 / Anthropic，含重试与报错翻译 |
 | 迁移 | `server/migrate.py` | ✅ 老数据 → 蓝图 + 个体 + 历史，只读老目录、可重跑 |
 | HTTP | `server/main.py` | ✅ 上线了，接口见下 |
-| 前端 | `web/` | ⬜ **待做** |
+| 前端 | `web/` | ✅ 库 / 圆桌对话 / 记忆编辑器 / 一生 / 设置 |
+| 提炼工作台 | — | ⬜ 从一本书炼一份人格（老项目有，还没搬过来） |
 
 ### 跑起来
 
 ```bash
-py -3 -m pip install fastapi uvicorn httpx   # 只有这三个依赖
-py -3 run.py                                  # 或双击 启动圆桌.cmd
+py -3 -m pip install fastapi uvicorn httpx    # 后端依赖，只有这三个
+cd web && npm install && npm run build         # 前端构建一次（之后不用再构建）
+cd .. && py -3 run.py                          # 或双击 启动圆桌.cmd
 ```
 
-打开它会打印的 `http://127.0.0.1:8787`。现在前端还没构建，所以打开是
-一张写着"后端已经起来了"的提示页——接口都能用，`/api/health`、`/api/bootstrap` 可以直接看。
+打开它打印的 `http://127.0.0.1:8787`。没构建前端时它会给一张说清楚的提示页，
+并在启动信息里告诉你差哪两步。
 
 ### 测试
 
 ```bash
+# 后端（不需要联网；装了上面三个依赖就能全跑）
 py -3 dev/selftest.py        # 34 项  落盘 / 生命 / 上下文 / 记忆递减
 py -3 dev/check_presets.py   # 49 项  预设提示词与老项目逐字一致（对着老文件核）
 py -3 dev/test_migrate.py    # 62 项  拿真实老数据迁移，含"老目录一个字节没变"
@@ -43,10 +46,24 @@ py -3 dev/test_context.py    # 46 项  真实生命 × 各种窗口，账目逐�
 py -3 dev/test_memory.py     # 58 项  压缩：什么时候压、压哪段、推水位线、坏模型怎么办
 py -3 dev/test_longterm.py   # 64 项  记忆提取（模型乱说话怎么办）+ 召回（零模型调用）
 py -3 dev/test_adapters.py   # 69 项  两种协议的请求组装与流解析（含老项目踩过的坑）
-py -3 dev/test_http.py       # 102 项 **端到端**：真起两个服务、真 socket、真流式
+py -3 dev/test_http.py       # 105 项 **端到端**：真起两个服务、真 socket、真流式
+
+# 界面（真浏览器）
+py -3 dev/test_ui.py --cdp-port 9333   # 52 项：库 / 记忆 / 一生 / 对话 / 设置 / 新建
 ```
 
-合计 **484 项**。前七套不需要联网也不需要装任何包；最后一套要装依赖（它要真起服务）。
+合计 **539 项**。界面那一套要一个开着调试端口的浏览器：
+
+```bash
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --headless=new --remote-debugging-port=9333 `
+  --user-data-dir=D:\某处\chrome-profile --disable-gpu about:blank
+py -3 dev/test_ui.py --cdp-port 9333 --shots    # --shots 会把截图存到 dev/.tmp-ui/shots
+```
+
+> 为什么界面测试不用 Playwright：它的 Python 绑定要靠**命名管道**跟 Node 驱动通信，
+> 在受限环境里起不来。这个测试自己用 CDP over TCP 驱动浏览器，能力上只少一点，
+> 但**不依赖任何浏览器自动化框架**（连 playwright 都不用装）。
 
 > ⚠️ **别用 `python`**：这台机器上 PATH 里的 `python` 是 3.9，而项目要求 **Python ≥ 3.11**。
 > 用 `py -3`（你机器上是 3.14，够用）。版本不够时包入口会直接拦下来并说明原因，
@@ -101,8 +118,14 @@ server/
 ├── chat.py       一次提问的全过程（并发席位 / 会议顺序 / 自动重试 / 落记录）
 ├── adapters/     OpenAI 兼容 / Anthropic：请求组装、SSE 解析、重试、报错翻译
 └── main.py       FastAPI 应用、路由、三层安全、静态托管
-dev/              八套测试 + 一个假上游（真的 HTTP 服务）
-web/              前端（待做）
+dev/              九套测试 + 一个假上游（真的 HTTP 服务）
+web/              前端（Vue 3 + Vite + TS + Pinia）
+├── index.html    里面那行 `window.__RT_BOOT__ = /*__RT_BOOT__*/null;` 是令牌占位符
+└── src/
+    ├── api.ts      接口客户端（含 NDJSON 流式读取）
+    ├── store.ts    全局状态（启动数据 / 当前桌子 / 正在流式的那一轮）
+    ├── md.ts       极小的 Markdown 渲染（先转义 HTML，不引依赖）
+    └── views/      库 / 对话 / 记忆 / 一生 / 设置
 ```
 
 ## 数据长什么样
