@@ -354,6 +354,11 @@ def main() -> int:
         check(br.eval("return !!document.querySelector('.life .btn')"), "卡片上有按钮")
         check(not br.eval("return document.body.scrollWidth > window.innerWidth + 4"),
               "没有横向滚动条（横向空间用起来了，没有溢出）")
+        # 页脚的版本号是**从 /api/health 读的**，不是前端写死的——
+        # 盯着它，因为写死过一次（改了后端版本，页脚还在骗人）
+        foot = br.text(".meta")
+        check("0.5." in foot, f"页脚显示的是后端报的版本：{foot}")
+        check("数据 v8" in foot, f"数据版本也是从接口来的：{foot}")
         if SHOTS:
             br.shot(root / "shots" / "1-library.png")
 
