@@ -1,0 +1,93 @@
+"""启动圆桌。
+
+    py -3 run.py                  # 起服务，端口自己挑一个空着的
+    py -3 run.py --port 8787      # 指定端口
+    py -3 run.py --data D:/某处   # 指定数据目录（默认 ./data）
+    py -3 run.py --reload         # 改了后端代码自动重启（开发用）
+
+为什么还要一个启动脚本，而不直接 `uvicorn server.main:app`：
+
+  1. **第一件事是检查依赖并说人话。** 没装 fastapi 时报一句
+     "py -3 -m pip install fastapi uvicorn httpx"，而不是一屏 import 报错
+  2. **只绑 127.0.0.1**（三层安全的第一层），不给一个能听外网的启动方式
+  3. 数据目录不存在时建好并**播种内置人格模板**，第一次打开就有东西看
+  4. 端口被占用时自动换一个，并**告诉你换了哪个**
+"""
+
+from __future__ import annotations
+
+import argparse
+import socket
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def free_port(preferred: int) -> tuple[int, bool]:
+    """优先用你指定的端口；被占了就换一个。返回 `(端口, 是不是换过)`。"""
+    for candidate in [preferred] + list(range(preferred + 1, preferred + 20)):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return candidate, candidate != preferred
+    with socket.socket() as s:  # 实在不行让系统随便给一个
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1]), True
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="启动圆桌")
+    ap.add_argument("--port", type=int, default=8787)
+    ap.add_argument("--data", default="data", help="数据目录（默认 ./data）")
+    ap.add_argument("--reload", action="store_true", help="改了后端代码自动重启（开发用）")
+    args = ap.parse_args()
+
+    try:
+        import uvicorn
+    except ImportError:
+        print("缺依赖。装一下（只有这三个）：\n")
+        print("    py -3 -m pip install fastapi uvicorn httpx\n")
+        print("装完再跑一次 py -3 run.py")
+        return 1
+
+    from server import main as appmod
+    from server import presets, store, templates
+
+    data_dir = Path(args.data).resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # 第一次跑：把内置人格模板播进去（幂等，随时可以再跑）
+    added = templates.seed(data_dir)
+    if added:
+        print(f"播了 {added} 份内置人格模板")
+
+    if not (data_dir / "settings.json").exists():
+        store.write_json(data_dir / "settings.json", {
+            "version": presets.DATA_VERSION,
+            "providers": [],
+            "advanced": dict(presets.DEFAULT_SETTINGS["advanced"]),
+            "modelInfo": {},
+        })
+
+    port, moved = free_port(args.port)
+    app = appmod.create_app(data_dir)
+    url = f"http://127.0.0.1:{port}"
+
+    print()
+    print("  圆桌在跑：" + url)
+    if moved:
+        print(f"（{args.port} 端口被占了，换成了 {port}）")
+    print(f"  数据目录：{data_dir}")
+    print("  只监听本机，外网访问不到。关掉这个窗口就是停服务。")
+    print()
+
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning",
+                reload=args.reload, app_dir=str(Path(__file__).resolve().parent))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -118,8 +118,8 @@ def main() -> int:
     print("\n── 人格与时间感 ──")
     check(big.system is not None and big.system.startswith(sun_tpl.system[:50]),
           "system 是以他的人格开头的（模型第一眼看到的是他是谁）")
-    check(len(sun_tpl.system) == 1591 and sun_tpl.system in big.system,
-          "1591 字符的人格一字不少地进去了（没有被预算裁掉）")
+    check(len(sun_tpl.system) == 1531 and sun_tpl.system in big.system,
+          f"人格一字不少地进去了（{len(sun_tpl.system)} 字符，迁移时清掉了 HTML 转义）")
     check("【现在】" in big.system, "带上了「现在几点」——他才知道自己活在什么时候")
     check("【你上次和他说话】" in big.system, "带上了「你上次和他说话是什么时候」")
 

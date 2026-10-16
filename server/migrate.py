@@ -25,12 +25,33 @@
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import presets, store, templates
 from .life import Life
+
+# 老数据里有几份人格是带着 HTML 转义存下来的（"行动 &gt; 思考"）——
+# 当初写人格或提炼的时候被转义进去了，不是用户的本意。
+# 它会被**原样发给模型**，所以迁移时清掉（用户确认过）。
+# 只动真正命中的实体，并且在报告里逐条说明改了什么，不静默改内容。
+_ENTITY = re.compile(r"&(?:gt|lt|amp|quot|apos|#\d{1,6}|#x[0-9a-fA-F]{1,6});")
+
+
+def clean_entities(text: str) -> tuple[str, dict[str, int]]:
+    """把 HTML 转义还原成原字符。返回 `(新文本, {实体: 命中次数})`。
+
+    只在真的命中时才动，命中了什么也一并报出来——用户能看出被改了哪几个字符。
+    """
+    counts: dict[str, int] = {}
+    for hit in _ENTITY.findall(text or ""):
+        counts[hit] = counts.get(hit, 0) + 1
+    if not counts:
+        return text, {}
+    return html.unescape(text), counts
 
 
 @dataclass
@@ -48,6 +69,8 @@ class Report:
     sharing: dict[str, list[str]] = field(default_factory=dict)
     # 模板名 → 不同的模板 id（同名但正文不同）
     name_clashes: dict[str, list[str]] = field(default_factory=dict)
+    # 清了 HTML 转义的模板：名字 → {实体: 次数}
+    cleaned: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def lines(self) -> list[str]:
         shared = {k: v for k, v in self.sharing.items() if len(v) > 1}
@@ -71,6 +94,11 @@ class Report:
             out.append("同名但正文不同的蓝图（老数据里就是这样，不是迁移造成的）：")
             for name, ids in clashed.items():
                 out.append(f"  · {name}：{len(ids)} 份 → {', '.join(ids)}")
+        if self.cleaned:
+            out.append("顺带修复的人格正文（老数据里存的是 HTML 转义，会被原样发给模型）：")
+            for name, counts in self.cleaned.items():
+                pairs = "、".join(f"{k}×{v}" for k, v in counts.items())
+                out.append(f"  · {name}：{pairs} → 还原成原字符")
         return out
 
 
@@ -110,11 +138,13 @@ def _read_old_threads(src: Path) -> list[dict]:
     return out
 
 
-def migrate(src, dst, *, dry_run: bool = False) -> Report:
+def migrate(src, dst, *, dry_run: bool = False, fix_entities: bool = True) -> Report:
     """把老数据搬成新结构。`src`/`dst` 都是数据目录。
 
     - **只读 src**，一个字节都不改
     - 已经搬过的生命会跳过（靠确定性 id），所以可以放心重跑
+    - `fix_entities`：把人格正文里的 HTML 转义还原（老数据里有一份是
+      "行动 &gt; 思考"）。默认开——它会被原样发给模型；不想要就传 False。
     """
     src, dst = Path(src), Path(dst)
     rep = Report()
@@ -139,9 +169,15 @@ def migrate(src, dst, *, dry_run: bool = False) -> Report:
     tpl_of: dict[str, str] = {}  # 旧 human id → 模板 id
     seen: set[str] = set()  # 这一趟里已经算过的模板（试跑时磁盘上什么都没写，只能靠它）
     for h in humans:
+        name = h.get("name", "未命名")
+        system = h.get("system", "") or ""
+        if fix_entities:
+            system, hits = clean_entities(system)
+            if hits:
+                rep.cleaned[name] = hits
         tpl = templates.make(
-            h.get("name", "未命名"),
-            h.get("system", "") or "",
+            name,
+            system,
             emoji=h.get("emoji", "🙂"),
             tagline=h.get("tagline", ""),
             tags=list(h.get("tags") or []),
@@ -265,15 +301,16 @@ def migrate(src, dst, *, dry_run: bool = False) -> Report:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """命令行入口：py -3 -m server.migrate <老数据目录> <新数据目录> [--dry-run]"""
+    """命令行入口：py -3 -m server.migrate <老数据目录> <新数据目录> [--dry-run] [--keep-entities]"""
     import sys
 
     args = list(argv if argv is not None else sys.argv[1:])
     dry = "--dry-run" in args
-    args = [a for a in args if a != "--dry-run"]
+    keep = "--keep-entities" in args
+    args = [a for a in args if a not in ("--dry-run", "--keep-entities")]
     src = args[0] if args else "D:/AAsanboxForDsh/data"
     dst = args[1] if len(args) > 1 else "data"
-    rep = migrate(src, dst, dry_run=dry)
+    rep = migrate(src, dst, dry_run=dry, fix_entities=not keep)
     print(f"{'（试跑，没有写任何东西）' if dry else '迁移完成'}")
     for line in rep.lines():
         print(f"  {line}")

@@ -180,8 +180,15 @@ def main() -> int:
 
     print("\n── 蓝图（人格模板）──")
     sun = _find_template(templates.load_all(dst), "孙宇晨")
-    check(sun is not None and len(sun.system) == 1591,
-          f"孙宇晨那份自己写的人格一字没动（{len(sun.system) if sun else '?'} 字符）")
+    # 老数据里这份人格是带 HTML 转义存下来的（"行动 &gt; 思考"），
+    # 迁移时按用户确认清掉：20 处 &gt; 各少 3 个字符（&gt;→>），1591 - 60 = 1531
+    check(sun is not None and len(sun.system) == 1531,
+          f"孙宇晨的人格清掉 HTML 转义后是 1531 字符（实际 {len(sun.system) if sun else '?'}）")
+    check(sun is not None and "&gt;" not in sun.system and "行动 > 思考" in sun.system,
+          "「&gt;」还原成了「>」，正文其余部分一字未动")
+    check(sun is not None and rep.cleaned.get("孙宇晨") == {"&gt;": 20},
+          f"报告里逐条说明了改了什么（实际 {rep.cleaned.get('孙宇晨')}）")
+    check(len(rep.cleaned) == 1, f"只有这一份人格被改动（实际 {len(rep.cleaned)} 份）")
     check(sun is not None and sun.origin == "imported", "来源标成 imported，跟内置/提炼的分得清")
     soc = [t for t in templates.load_all(dst) if t.name == "苏格拉底"]
     check(len(soc) == 1, f"两位苏格拉底合成了一份蓝图（实际 {len(soc)} 份）")
@@ -257,8 +264,20 @@ def main() -> int:
     check(rep3.lives_created == 15, "试跑报的生命数跟真跑一样")
     check(rep3.entries_backfilled == 108, f"试跑报的历史条数跟真跑一样（实际 {rep3.entries_backfilled}）")
     check(rep3.sessions_written == 22, "试跑报的会话数跟真跑一样")
+    check(rep3.cleaned.get("孙宇晨") == {"&gt;": 20}, "试跑也报出会清掉哪些转义")
     check(not dry_dst.exists() and not (dry_dst / "settings.json").exists(),
           "试跑真的什么都没写（连目录都没建）")
+
+    print("\n── 转义清理可以关掉（不想动数据的人能选）──")
+    keep_dst = root / "keep"
+    rep4 = migrate.migrate(src, keep_dst, fix_entities=False)
+    kept = _find_template(templates.load_all(keep_dst), "孙宇晨")
+    check(len(kept.system) == 1591 and "&gt;" in kept.system,
+          f"关掉之后原样保留：还是 1591 字符、还是 &gt;（实际 {len(kept.system)}）")
+    check(not rep4.cleaned, "报告里也不会说清理过什么")
+    check(rep4.lives_created == 15 and rep4.entries_backfilled == 108,
+          "只影响人格正文，历史和生命数量都不受这个开关影响")
+    check(len(tree_hash(src)) == len(before), "老目录仍然一个字节都没变")
 
     print(f"\n{'=' * 46}\n通过 {passed}，失败 {failed}")
     return 1 if failed else 0
