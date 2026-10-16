@@ -13,8 +13,9 @@
 | 落盘 | `server/store.py` | ✅ 原子写、只追加、容忍末行截断、按字节读尾巴 |
 | 生命 | `server/life.py` | ✅ 身份 + 对话记录 + 长期记忆 + 水位线索引 |
 | 蓝图 | `server/templates.py` | ✅ 人格模板（确定性 id，播种/迁移可重跑） |
-| 上下文 | `server/context.py` | ✅ 四档记忆递减 + 预算裁剪（**请求路径绝不调模型**） |
-| 压缩 | `server/memory.py` | ✅ 前置水位线 + 后台压缩（模型调用是注入的，所以离线可测） |
+| 上下文 | `server/context.py` | ✅ 四档记忆递减 + 预算裁剪 + 召回（**请求路径绝不调模型**） |
+| 压缩 | `server/memory.py` | ✅ 前置水位线 + 后台压缩（模型调用注入，离线可测） |
+| 长期记忆 | `server/memory.py` | ✅ 提取（去重收敛）+ 召回（关键词 + 时间衰减，零模型调用） |
 | 迁移 | `server/migrate.py` | ✅ 老数据 → 蓝图 + 个体 + 历史，只读老目录、可重跑 |
 | HTTP | `server/main.py`、`server/adapters/` | ⬜ 待做（**依赖没装**，见下） |
 | 前端 | `web/` | ⬜ 待做 |
@@ -23,11 +24,12 @@
 py -3 dev/selftest.py        # 34 项  落盘 / 生命 / 上下文 / 记忆递减
 py -3 dev/check_presets.py   # 49 项  预设提示词与老项目逐字一致（对着老文件核）
 py -3 dev/test_migrate.py    # 54 项  拿真实老数据迁移，含"老目录一个字节没变"
-py -3 dev/test_context.py    # 35 项  真实生命 × 各种窗口，账目逐笔核对
+py -3 dev/test_context.py    # 46 项  真实生命 × 各种窗口，账目逐笔核对 + 单轮超大
 py -3 dev/test_memory.py     # 58 项  压缩：什么时候压、压哪段、推水位线、坏模型怎么办
+py -3 dev/test_longterm.py   # 64 项  记忆提取（模型乱说话怎么办）+ 召回（零模型调用）
 ```
 
-合计 **230 项**，全部不需要 pytest、不需要联网、不需要装任何包。
+合计 **305 项**，全部不需要 pytest、不需要联网、不需要装任何包。
 
 > ⚠️ **别用 `python`**：这台机器上 PATH 里的 `python` 是 3.9，而项目要求 **Python ≥ 3.11**。
 > 用 `py -3`（你机器上是 3.14，够用）。版本不够时包入口会直接拦下来并说明原因，
@@ -51,12 +53,13 @@ server/
 ├── templates.py  人格模板：蓝图，不绑厂商、没有记忆                          ← 纯标准库
 ├── presets.py    预设（从老项目逐字搬过来，check_presets.py 对着老文件核）    ← 纯标准库
 ├── context.py    按预算组装一次请求的 system / messages                      ← 纯标准库
-├── memory.py     前置水位线 + 后台压缩（模型调用靠注入，便于离线测）          ← 纯标准库
+├── memory.py     前置水位线 + 后台压缩 + 记忆提取/召回（模型调用靠注入）      ← 纯标准库
 ├── model.py      模型调用的公共契约（ModelReply / ModelError）               ← 纯标准库
+├── text.py       token 估算 / 时间格式化（抽出来是为了打断循环依赖）          ← 纯标准库
 ├── migrate.py    老数据 → 新结构（只读老目录、确定性 id、可重跑）             ← 纯标准库
 ├── adapters/     上游协议适配（OpenAI 兼容 / Anthropic 流式）                ← 待做
 └── main.py       FastAPI 应用、路由、安全、静态托管                          ← 待做
-dev/              五套测试（纯标准库，含一个假模型）
+dev/              六套测试（纯标准库，含假模型）
 ```
 
 ## 数据长什么样

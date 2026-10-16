@@ -56,6 +56,18 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{s}_{secrets.token_hex(3)}"
 
 
+_NORM = re.compile(r"[\s\W_]+")
+
+
+def norm_key(s: str) -> str:
+    """规范化后用来比对：去掉空白和标点，统一小写。
+
+    中文在 Unicode 下算"词字符"，所以 `\\W` 去掉的正是标点和空格，不会误伤汉字。
+    记忆去重要靠它："用户不喜欢被列清单" 和 "用户不喜欢被列清单。" 是同一条。
+    """
+    return _NORM.sub("", (s or "")).lower()
+
+
 def headline(text: str, limit: int = 80) -> str:
     """取一段文字的"一行版"：第一行非空内容，超长就截断。
 
@@ -82,9 +94,10 @@ class Memory:
     desc: str = ""  # 一句话说明——**目录里放的是它，不是正文**
     type: str = "user"
     scope: str = "persistent"  # persistent=长期有效 | session=只在这个话题里有效
-    at: int = 0  # 什么时候写下的
+    at: int = 0  # 什么时候写下的（第一次知道这件事的时间）
     source: str = ""  # 从哪次会话来的（会话 id）
     text: str = ""
+    updated_at: int = 0  # 后来修正过的时间（0 = 从没改过）
 
     def to_markdown(self) -> str:
         head = [
@@ -95,11 +108,10 @@ class Memory:
             f"scope: {self.scope}",
             f"at: {self.at or now_ms()}",
             f"source: {self.source}",
-            "---",
-            "",
-            self.text.strip(),
-            "",
         ]
+        if self.updated_at:
+            head.append(f"updatedAt: {self.updated_at}")
+        head += ["---", "", self.text.strip(), ""]
         return "\n".join(head)
 
     @staticmethod
@@ -124,6 +136,7 @@ class Memory:
             at=int(meta.get("at") or 0),
             source=meta.get("source", ""),
             text=body.strip(),
+            updated_at=int(meta.get("updatedAt") or 0),
         )
 
     def index_line(self) -> str:
@@ -299,19 +312,43 @@ class Life:
         return sorted(out, key=lambda m: m.at)
 
     def remember(self, *, name: str, text: str, desc: str = "", type: str = "user",
-                 scope: str = "persistent", source: str = "") -> Memory:
+                 scope: str = "persistent", source: str = "", mid: str | None = None,
+                 at: int = 0) -> Memory:
         """写一条记忆，并重建目录。
 
-        去重放在上层（压缩那次调用）做；这里只保证"写完目录是新的"。
-        `desc` 是目录里那"一句话"——由写入那次模型调用给，别省。
+        `mid` 给上就是**修正已有的一条**（去重时走这条路）：保留原来的 `at`
+        （第一次知道这件事的时间）不动，另记 `updated_at`（什么时候改的）。
+        所以"他现在怎么想"和"他什么时候开始这么想"不会混在一起。
+
+        `at` 是"他什么时候知道这件事的"。从旧对话里重算记忆时要用**那段对话的时间**，
+        不能用"现在"——否则所有记忆都会变成"今天刚知道的"，时间衰减就失效了。
+
+        去重的**判断**放在上层（`server/memory.py` 的提取逻辑）做；
+        这里只保证"写完目录是新的"，以及"写记忆只有一个入口"。
         """
-        mid = new_id("m")
-        mem = Memory(id=mid, name=name, desc=desc, type=type, scope=scope, at=now_ms(),
-                     source=source, text=text)
-        store.write_json(self.root / "identity.json", self.identity)  # 确保目录存在（首次）
+        if mid:
+            old_path = self.memory_dir() / f"{mid}.md"
+            old = Memory.from_markdown(mid, old_path.read_text(encoding="utf-8")) if old_path.exists() else None
+            mem = Memory(id=mid, name=name, desc=desc, type=type, scope=scope,
+                         at=(old.at if old else (at or now_ms())),
+                         source=source or (old.source if old else ""),
+                         text=text, updated_at=now_ms())
+        else:
+            mid = new_id("m")
+            mem = Memory(id=mid, name=name, desc=desc, type=type, scope=scope,
+                         at=at or now_ms(), source=source, text=text)
+        self.memory_dir().mkdir(parents=True, exist_ok=True)
         (self.memory_dir() / f"{mid}.md").write_text(mem.to_markdown(), encoding="utf-8")
         self.rebuild_index()
         return mem
+
+    def memory_named(self, name: str) -> Memory | None:
+        """按名字找一条（去重要用）。两边都做规范化后再比。"""
+        wanted = norm_key(name)
+        for m in self.memories():
+            if norm_key(m.name) == wanted:
+                return m
+        return None
 
     def forget(self, mid: str) -> bool:
         """删掉一条记忆。用户在记忆编辑器里点删除时走这里。"""

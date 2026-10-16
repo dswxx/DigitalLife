@@ -217,7 +217,39 @@ def main() -> int:
                    + (f"，但有 {len(bad)} 处问题：{bad[:3]}" if bad else ""))
     check(slack > 0, f"没有一个组合超出窗口，最紧的那次（{worst}）还剩 {slack} token 余量")
 
-    # ── 9. 账目审计：报了几条，就得真发出去几条 ──
+    # ── 9. 单轮就超大：保留头尾、中间省略，并且要告诉用户 ──
+    print("\n── 粘一整本书进来（单轮就超大）──")
+    book = "开头：这是一份很长的材料，用户把它整个粘进来了。" + "中间的内容。" * 4000 + "结尾：所以我到底该不该辞职？"
+    huge = context.build_context(
+        sun, session_id="th_b7f5896a0e6b", question=book,
+        window=8192, output_reserve=1024, persona=sun_tpl.system, bare=sun_tpl.bare,
+    )
+    last = huge.messages[-1]["content"]
+    check(huge.notices, f"给了用户一句提示（{huge.notices[0][:40] if huge.notices else '没有'}）")
+    check("中间" in last and "字没读到" in last, "正文里明写了「中间 …字没读到」")
+    check(last.startswith("开头："), "**开头保留**（这段在讲什么）")
+    check(last.rstrip().endswith("所以我到底该不该辞职？"), "**结尾保留**（他的诉求）")
+    check("中间的内容。中间的内容。中间的内容。" * 3 in last and last.count("中间的内容。") < 1000,
+          f"中间那一大段确实省掉了（24000 字里只剩 {last.count('中间的内容。')} 段）")
+    check(huge.estimated_input + 1024 <= 8192,
+          f"掐完能装进窗口了（{huge.estimated_input} + 1024 ≤ 8192）")
+    check(huge.session_entries == 0, "这种情况下历史全让位给这一条（他没余力再看旧的了）")
+    check(alternation_ok(huge.messages) == "", "掐完仍然合法")
+
+    # 人格比窗口还大：这是真没法救的情况，必须说出来，而不是发出去等平台报错
+    print("\n── 人格比窗口还大 ──")
+    tiny_window = context.build_context(
+        sun, session_id="th_b7f5896a0e6b", question="在吗",
+        window=1200, output_reserve=512, persona=sun_tpl.system, bare=sun_tpl.bare,
+    )
+    check(tiny_window.notices, f"会说明装不下（{tiny_window.notices[0][:36] if tiny_window.notices else '没有'}）")
+    check("换个大窗口" in tiny_window.notices[0] or "写短" in tiny_window.notices[0],
+          "而且给的是能照做的建议（换模型 / 把人格写短），不是一句「出错了」")
+
+    # 正常大小的问题不该被误掐
+    check(not small.notices, "普通长度的问题不会触发这条提示（不然就是黄条复读）")
+
+    # ── 10. 账目审计：报了几条，就得真发出去几条 ──
     # 这一段是被一个真 bug 逼出来的：预算正好停在「他自己说的」那句上时，
     # 那条孤零零的助手发言会被合并逻辑丢掉，但账没跟着减，
     # 于是界面报 3 条、实际只发了 2 条（window=2800 那档真出现过）。

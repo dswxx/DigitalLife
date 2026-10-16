@@ -15,48 +15,14 @@
 
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass
 
+from . import memory
 from .life import KIND_HEARD, KIND_SELF, KIND_SUMMARY, KIND_YOU, Life
+from .text import estimate_tokens, fmt_clock, fmt_day, human_ago
 
-# 估算 token：中文 1 字 ≈ 1 token，其余 3.6 字符 ≈ 1。
-# 和老项目同一个口径（换栈时这条口径要一起带走，否则预算行为和以前不一样了）。
-_CJK = re.compile(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]")
-
-
-def estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    cjk = len(_CJK.findall(text))
-    return round(cjk + (len(text) - cjk) / 3.6)
-
-
-def fmt_clock(ms: int) -> str:
-    return time.strftime("%H:%M", time.localtime(ms / 1000))
-
-
-def fmt_day(ms: int) -> str:
-    return time.strftime("%Y-%m-%d", time.localtime(ms / 1000))
-
-
-def human_ago(ms: int) -> str:
-    """"3 小时前""昨天""上周三"——记忆递减的那个"感觉"。"""
-    if not ms:
-        return "不记得了"
-    diff = time.time() - ms / 1000
-    if diff < 90:
-        return "刚刚"
-    if diff < 3600:
-        return f"{int(diff // 60)} 分钟前"
-    if diff < 86400:
-        return f"{int(diff // 3600)} 小时前"
-    if diff < 172800:
-        return "昨天"
-    if diff < 604800:
-        return f"{int(diff // 86400)} 天前"
-    return time.strftime("%m月%d日", time.localtime(ms / 1000))
+__all__ = ["Built", "build_context", "estimate_tokens", "fmt_clock", "fmt_day", "human_ago"]
 
 
 @dataclass
@@ -77,6 +43,12 @@ class Built:
     history: list[dict]
     # 这次会话较早的部分是不是已经压成摘要了（界面要显示"已整理"）
     compacted: bool
+    # 长期记忆里召回了哪几条（带正文的那一档）
+    recalled: int
+    # 需要告诉用户的事（**同一件事只说一次**的去重放在上层）。
+    # 这里只会有一件：他这次说的话没被完整读到——这是唯一必须告诉用户的情况，
+    # 因为它意味着模型的回答建立在一段被掐掉中间的内容上，而用户不知道。
+    notices: list[str]
 
 
 def build_context(
@@ -115,11 +87,19 @@ def build_context(
             budget=window,
             history=[],
             compacted=False,
+            recalled=0,
+            notices=[],
         )
 
     safety = max(1024, round(window * safety_ratio))
 
-    # ── system：时间感 + 本会话较早部分的摘要 + 长期记忆目录 + 更早会话的一行 ──
+    # 只读水位线之后的原文：更老的部分已经压成摘要了（下面那段），
+    # 再解析一遍纯属浪费，而且会让"越老的生命越慢"。
+    # 先读，是因为拼 system 时要用到"最近几轮他说了什么"来做召回。
+    entries = [e for e in life.read_session(session_id, only_tail=True)
+               if e.get("kind") != KIND_SUMMARY]
+
+    # ── system：时间感 + 本会话较早部分的摘要 + 记忆目录 + 召回的正文 + 更早会话的一行 ──
     now = int(time.time() * 1000)
     sys_parts: list[str] = []
     if persona:
@@ -146,6 +126,14 @@ def build_context(
     if index:
         sys_parts.append("【你记得的事】\n" + index)
 
+    # 召回：从长期记忆里挑出和这一次有关的，带上正文。
+    # **纯机械检索，不调模型**（关键词 + 时间衰减）——多一次调用就是每次对话都多花钱。
+    # 放在目录之后：目录是"你都有哪些记忆"，这里是"其中这几条现在想起来了"。
+    recalled = memory.recall(life, question=question, recent=_recent_user_text(entries))
+    if recalled:
+        sys_parts.append("【和这次有关的旧事】\n"
+                         + "\n\n".join(f"《{x['name']}》：{x['text']}" for x in recalled))
+
     system = "\n\n".join(sys_parts)
 
     # ── messages：本次会话的近期原文，从最新往前装到装不下 ──
@@ -162,10 +150,34 @@ def build_context(
     fixed.append({"role": "user", "content": question})
     spent = sum(estimate_tokens(m["content"]) for m in fixed)
 
-    # 只读水位线之后的原文：更老的部分已经压成摘要了（上面那段），
-    # 再解析一遍纯属浪费，而且会让"越老的生命越慢"。
-    entries = [e for e in life.read_session(session_id, only_tail=True)
-               if e.get("kind") != KIND_SUMMARY]
+    # ── 单轮就超大：保留头尾、中间省略 ──
+    # 用户粘一整本书进来时，这一条 user 消息本身就超过窗口——这时连裁剪都救不了，
+    # 因为"最近的一条"就是那条超大的。按设计文档：保留头尾、中间省略，
+    # 并且**要告诉用户**（唯一必须说的情况：他这次说的话没被完整读到）。
+    notices: list[str] = []
+    if budget <= 0:
+        notices.append(
+            f"这个模型装不下他（{window} token 的窗口，光人格和记忆就占满了）。"
+            f"换个大窗口的模型，或者把人格写短一点。"
+        )
+    elif spent > budget:
+        # 先掐问题（heard 那一段在会议模式下才出现，而且本来就是别人的话）
+        allowed = budget - (spent - estimate_tokens(question))
+        clipped, cut = _clip(question, allowed)
+        if cut:
+            fixed[-1] = {"role": "user", "content": clipped}
+            spent = sum(estimate_tokens(m["content"]) for m in fixed)
+            notices.append(
+                f"这一条太长了（{len(question)} 字），他只读到了开头和结尾，"
+                f"中间 {cut} 字没读到——要完整读到得换个大窗口的模型。"
+            )
+        if spent > budget and len(fixed) > 1:
+            allowed = budget - estimate_tokens(question)
+            clipped, cut = _clip(fixed[0]["content"], allowed)
+            if cut:
+                fixed[0] = {"role": "user", "content": clipped}
+                spent = sum(estimate_tokens(m["content"]) for m in fixed)
+
     tail: list[dict] = []
     kept = 0
     idx = len(entries)
@@ -212,7 +224,38 @@ def build_context(
         budget=budget,
         history=tail,
         compacted=bool(own_summary),
+        recalled=len(recalled),
+        notices=notices,
     )
+
+
+CLIP_HEAD = 0.65  # 保留头尾时开头占多少
+CLIP_TAIL = 0.30  # 结尾占多少（中间省略）
+
+
+def _clip(text: str, max_tokens: int) -> tuple[str, int]:
+    """太长的内容"保留头尾、中间省略"。返回 `(新文本, 省掉了多少字)`。
+
+    预算按**字符数**保守估计：中文一个字大约一个 token，英文更省。
+    宁可用不满，也不能猜大了——猜大了就是 400，用户看到的是报错而不是回答。
+
+    为什么留头也留尾：开头决定这段话在讲什么，结尾往往是结论和诉求
+    （"……所以我到底该不该辞职？"）。中间的大段材料是最可以省的部分。
+    """
+    limit = max(240, int(max_tokens))
+    if len(text) <= limit:
+        return text, 0
+    head = int(limit * CLIP_HEAD)
+    tail = int(limit * CLIP_TAIL)
+    cut = len(text) - head - tail
+    return f"{text[:head]}\n\n……（中间 {cut} 字没读到）……\n\n{text[-tail:]}", cut
+
+
+def _recent_user_text(entries: list[dict], limit: int = 3) -> str:
+    """最近几轮"用户说的话"。召回时用：本轮问题常常是"那这件事怎么办"，
+    光看这一句匹配不出任何东西，得带上前面在聊什么。"""
+    picked = [e.get("text", "") for e in entries if e.get("kind") == KIND_YOU][-limit:]
+    return "\n".join(picked)
 
 
 def _entry_message(e: dict) -> dict:
