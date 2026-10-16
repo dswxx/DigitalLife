@@ -1,0 +1,9 @@
+# 统一换行：文本一律 LF 入库，Windows 上检出也不折腾。
+# 老项目就是这么守的，跨平台的时候省掉一整类"只有某人机器上能跑"的问题。
+* text=auto eol=lf
+
+# 二进制，别动
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
