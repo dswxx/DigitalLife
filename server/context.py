@@ -71,6 +71,10 @@ class Built:
     memory_lines: int  # 目录带了几行
     dropped: int  # 因为预算丢掉了几条原文
     budget: int
+    # 真正装进去的那些历史消息（合并前的原样，按时间顺序）。
+    # 有了它，「账」就是可审计的：不信 session_entries 的话直接数这个列表。
+    # 它不参与合并——合并会改变条数，那就没法用条数对账了。
+    history: list[dict]
 
 
 def build_context(
@@ -107,6 +111,7 @@ def build_context(
             memory_lines=0,
             dropped=0,
             budget=window,
+            history=[],
         )
 
     safety = max(1024, round(window * safety_ratio))
@@ -151,16 +156,36 @@ def build_context(
     entries = [e for e in life.read_session(session_id) if e.get("kind") != KIND_SUMMARY]
     tail: list[dict] = []
     kept = 0
-    for e in reversed(entries):
-        role = "user" if e.get("kind") in (KIND_YOU, KIND_HEARD) else "assistant"
-        text = e.get("text", "")
-        cost = estimate_tokens(text)
+    idx = len(entries)
+
+    def take_older() -> bool:
+        """再往回装一条。装下了返回 True，装不下或没有更早的了返回 False。"""
+        nonlocal spent, kept, idx
+        if idx <= 0:
+            return False
+        e = entries[idx - 1]
+        cost = estimate_tokens(e.get("text", ""))
         if spent + cost > budget:
-            break
+            return False
         spent += cost
-        prefix = f"（{e['who']}）" if e.get("kind") == KIND_HEARD else ""
-        tail.insert(0, {"role": role, "content": prefix + text})
         kept += 1
+        idx -= 1
+        tail.insert(0, _entry_message(e))
+        return True
+
+    while take_older():
+        pass
+
+    # 装到一半可能正好停在「他自己说的」那句上。一条孤零零的助手发言不能当对话开头
+    # ——它前面那句用户发言已经被砍掉了，留着它模型也接不上。
+    # 丢掉，**账要跟着减**（否则界面会报一个没真发出去的数字），
+    # 然后用省下来的额度继续往回装（否则那段额度就白扔了）。
+    while tail and tail[0]["role"] != "user":
+        spent -= estimate_tokens(tail[0]["content"])
+        kept -= 1
+        tail.pop(0)
+        while take_older():
+            pass
 
     messages = _merge_consecutive(tail + fixed)
 
@@ -173,7 +198,19 @@ def build_context(
         memory_lines=memory_lines,
         dropped=len(entries) - kept,
         budget=budget,
+        history=tail,
     )
+
+
+def _entry_message(e: dict) -> dict:
+    """一条对话记录 → 一条消息。
+
+    **会议里听到的也算 user 侧**：那是别人对他说的，不是他说的。
+    带上说话人的名字，否则模型会把别人的观点当成自己刚说过的。
+    """
+    role = "user" if e.get("kind") in (KIND_YOU, KIND_HEARD) else "assistant"
+    prefix = f"（{e['who']}）" if e.get("kind") == KIND_HEARD else ""
+    return {"role": role, "content": prefix + e.get("text", "")}
 
 
 def _last_talked(life: Life, exclude_session: str) -> int:
