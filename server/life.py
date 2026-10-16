@@ -137,9 +137,15 @@ class Life:
 
     # ── 打开 / 创建 ──
     @staticmethod
-    def create(humans_dir, *, template_id: str, provider_id: str, model: str, name: str, emoji: str = "🙂") -> "Life":
-        """用某个模板 + 某家 API 创建出来。**这一刻起他有了自己的记忆。**"""
-        hid = new_id("dh")
+    def create(humans_dir, *, template_id: str, provider_id: str, model: str, name: str,
+               emoji: str = "🙂", life_id: str | None = None, born_at: int | None = None) -> "Life":
+        """用某个模板 + 某家 API 创建出来。**这一刻起他有了自己的记忆。**
+
+        `life_id` / `born_at` 只在迁移时给：老数据里他是哪天出生的、他叫什么 id，
+        都由老数据说了算，不能在这里重新发一个——否则重跑迁移就会再造一批新生命，
+        而"出生时间"会集体变成今天。
+        """
+        hid = life_id or new_id("dh")
         root = Path(humans_dir) / hid
         (root / "memory").mkdir(parents=True, exist_ok=True)
         (root / "sessions").mkdir(parents=True, exist_ok=True)
@@ -150,10 +156,15 @@ class Life:
             "model": model,
             "name": name,
             "emoji": emoji,
-            "bornAt": now_ms(),
+            "bornAt": born_at or now_ms(),
         }
         store.write_json(root / "identity.json", identity)
-        store.write_json(root / "memory" / "INDEX.md", "")  # 占位，保持目录结构稳定
+        # 占位，保持目录结构稳定。**用 write_text 而不是 write_json**——
+        # write_json 会把空字符串写成 `""`（两个引号字符），
+        # 而 index_text() 会把它原样塞进系统提示词里。
+        idx = root / "memory" / "INDEX.md"
+        if not idx.exists():
+            idx.write_text("", encoding="utf-8")
         return Life(id=hid, root=root, identity=identity)
 
     @staticmethod
