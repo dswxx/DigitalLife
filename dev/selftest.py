@@ -131,7 +131,11 @@ def main() -> int:
     print("\n── 记忆递减 ──")
     old = "th_old"
     life.append(old, "you", text="上周问过的事")
-    life.append(old, "summary", text="他问过要不要换个城市，我说先问自己想要什么。")
+    # 摘要的记录留在 JSONL（留痕），请求路径用的是 meta 里的索引——
+    # 所以这里必须走 advance_compaction（它两样都写），不能只往 JSONL 追加一行。
+    # 理由：请求路径每次都去扫所有会话文件找摘要，生命活得久了就是每次重读几十个文件。
+    life.advance_compaction(old, summary="他问过要不要换个城市，我说先问自己想要什么。",
+                            through=life.read_session(old)[-1]["t"], offset=0)
     built = context.build_context(life, session_id=sid, question="今天聊什么", window=200_000,
                                   persona="你是苏格拉底。")
     check("换个城市" in built.system, "更早的会话以一行摘要进了 system")

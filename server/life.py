@@ -56,6 +56,20 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{s}_{secrets.token_hex(3)}"
 
 
+def headline(text: str, limit: int = 80) -> str:
+    """取一段文字的"一行版"：第一行非空内容，超长就截断。
+
+    用途是"今天更早的对话"那一档——那里只该有一行。
+    这是**临时做法**：真正的"一句话摘要"应该由压缩那次调用给（就像记忆条目的
+    `desc` 那样），等精修记忆编排时换掉。现在先保证它一定只有一行。
+    """
+    for line in (text or "").splitlines():
+        line = line.strip().lstrip("-·* ").strip()
+        if line:
+            return line[:limit] + ("…" if len(line) > limit else "")
+    return ""
+
+
 # ─────────────────────── 记忆条目（Markdown + YAML 头）───────────────────────
 
 
@@ -184,21 +198,94 @@ class Life:
     def session_path(self, session_id: str) -> Path:
         return self.root / "sessions" / f"{_ID_SAFE.sub('_', session_id)}.jsonl"
 
+    def meta_path(self, session_id: str) -> Path:
+        return self.root / "sessions" / f"{_ID_SAFE.sub('_', session_id)}.meta.json"
+
+    def session_size(self, session_id: str) -> int:
+        p = self.session_path(session_id)
+        return p.stat().st_size if p.exists() else 0
+
     def append(self, session_id: str, kind: str, **fields) -> dict:
         """往这次会话的记录里追加一条。**带时间戳**——记忆递减和时间感都靠它。"""
         entry = {"t": now_ms(), "kind": kind, **fields}
         store.append_jsonl(self.session_path(session_id), entry)
         return entry
 
-    def read_session(self, session_id: str, warn: bool = True) -> list[dict]:
-        entries, skipped = store.read_jsonl(self.session_path(session_id))
+    def read_session(self, session_id: str, warn: bool = True, only_tail: bool = False) -> list[dict]:
+        """读这次会话的记录。
+
+        `only_tail=True` 只读水位线之后的**未压缩原文**（请求路径用这个）。
+        更老的部分已经压成摘要了，没必要再解析一遍——生命活得越久，
+        这个区别越明显。要读全部（记忆编辑器、"一生"时间线、重算摘要）就用默认值。
+        """
+        offset = self.compacted_offset(session_id) if only_tail else 0
+        entries, skipped = store.read_jsonl(self.session_path(session_id), offset=offset)
         if skipped and warn:
             print(f"[life] {self.id}/{session_id}：跳过了 {skipped} 行坏记录（多半是崩在写入中间）")
         return entries
 
+    def read_session_spans(self, session_id: str, only_tail: bool = False) -> list[tuple[int, dict]]:
+        """和 `read_session` 一样，但每条带上它在文件里的**起始字节位置**。
+
+        压缩要用：水位线得落在"被压内容的末尾"那个字节上。
+        """
+        offset = self.compacted_offset(session_id) if only_tail else 0
+        spans, _ = store.read_jsonl_spans(self.session_path(session_id), offset=offset)
+        return spans
+
     def sessions(self) -> list[str]:
         d = self.root / "sessions"
         return sorted((p.stem for p in d.glob("*.jsonl")), reverse=True) if d.exists() else []
+
+    # ── 水位线：已经压成摘要的那一段 ──
+    def compaction(self, session_id: str) -> dict:
+        """这次会话的压缩状态：`{summary, compactedThrough, compactedOffset, times, usage, model}`。
+
+        没有压过就是空字典。
+        """
+        return store.read_json(self.meta_path(session_id), {})
+
+    def compacted_offset(self, session_id: str) -> int:
+        """水位线的字节位置。从这里往后读就是"还没压过的尾巴"。"""
+        return int(self.compaction(session_id).get("compactedOffset") or 0)
+
+    def summary_text(self, session_id: str) -> str:
+        """这次会话较早部分压出来的摘要（没有就是空串）。"""
+        return (self.compaction(session_id).get("summary") or "").strip()
+
+    def advance_compaction(self, session_id: str, *, summary: str, through: int, offset: int,
+                           times: int = 1, model: str = "", usage: dict | None = None) -> dict:
+        """压完一段：往记录里追加一条 `summary`（留痕），再原子地推进水位线。
+
+        `offset` 是**被压内容的末尾在文件里的字节位置**（由 `memory.plan` 给出），
+        不是当时的文件末尾——那之后通常还有没压过的原文。
+
+        顺序是有意的——**先留痕，再推水位线**。中间崩了最多是记录里多一条重复的摘要
+        （摘要本来就是可以重算的派生物），而不会出现"水位线说压过了、记录里却没有"。
+        """
+        entry = self.append(
+            session_id, KIND_SUMMARY, text=summary, through=int(through),
+            throughOffset=int(offset), model=model, usage=usage or {},
+        )
+        meta = {
+            "sessionId": session_id,
+            "summary": summary,
+            "compactedThrough": int(through),
+            "compactedOffset": int(offset),
+            "times": times,
+            "model": model,
+            "usage": usage or {},
+            "updatedAt": now_ms(),
+        }
+        prev = self.compaction(session_id)
+        meta["totalUsage"] = {
+            "promptTokens": int(prev.get("totalUsage", {}).get("promptTokens", 0))
+            + int((usage or {}).get("promptTokens", 0)),
+            "completionTokens": int(prev.get("totalUsage", {}).get("completionTokens", 0))
+            + int((usage or {}).get("completionTokens", 0)),
+        }
+        store.write_json(self.meta_path(session_id), meta)
+        return meta
 
     # ── 长期记忆 ──
     def memory_dir(self) -> Path:
@@ -249,17 +336,24 @@ class Life:
 
     # ── 供 Context 组装用 ──
     def summaries(self, *, exclude_session: str | None = None) -> list[dict]:
-        """所有会话的摘要条目：`{session, t, text}`。
+        """其他会话各压出来的一句话：`{session, t, text}`。
 
         "记忆递减"的原料——越老的会话，越只剩这里的一行。
 
-        TODO（等精修记忆编排时做）：现在是每次请求都把每个会话文件读一遍。
-        生命活得久了这里会变慢。两条路：加一层进程内缓存（按文件 mtime 失效），
-        或者把摘要单独存一个 `summaries.jsonl`。先记着，别现在优化。
+        **读 meta，不读原文**：这里以前是把每个会话文件都解析一遍（原地的 TODO）。
+        生命活得久了那就是每次请求都要重读几十个文件。水位线进了 meta 之后，
+        这里只读几十个几百字节的小文件，而且只用读带 meta 的那些。
         """
+        d = self.root / "sessions"
+        if not d.exists():
+            return []
         out = []
-        for sid in self.sessions():
-            for e in self.read_session(sid, warn=False):
-                if e.get("kind") == KIND_SUMMARY and sid != exclude_session:
-                    out.append({"session": sid, "t": e.get("t", 0), "text": e.get("text", "")})
+        for p in d.glob("*.meta.json"):
+            sid = p.name[: -len(".meta.json")]
+            if sid == exclude_session:
+                continue
+            m = store.read_json(p, {})
+            text = headline(m.get("summary") or "")
+            if text:
+                out.append({"session": sid, "t": int(m.get("compactedThrough") or 0), "text": text})
         return sorted(out, key=lambda x: x["t"], reverse=True)

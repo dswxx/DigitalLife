@@ -76,28 +76,69 @@ def append_jsonl(path, obj) -> None:
         os.fsync(f.fileno())
 
 
-def read_jsonl(path, tolerate_tail: bool = True) -> tuple[list[dict], int]:
+def read_jsonl(path, tolerate_tail: bool = True, offset: int = 0) -> tuple[list[dict], int]:
     """逐行读 JSONL，返回 (条目列表, 跳过的坏行数)。
 
     末行截断（崩溃留下的）默认跳过——**这是这套存储能"崩了也不丢前面"的关键**。
+
+    `offset` 是**字节位置**，用来只读尾巴：压缩过的老对话归档在磁盘上，
+    每次请求却都要读一遍整个文件的话，"越老的生命越贵"就变成了"越老越慢"。
+    水位线（`compactedOffset`）永远落在行的边界上（= 追加前那一刻的文件长度），
+    所以从这里读到的第一行必然是一整行。
+
+    用二进制模式而不是文本模式：文本模式的 `seek` 只认 `tell()` 给出的
+    cookie，不认字节位置。UTF-8 的多字节序列里不会出现 0x0A，
+    所以在二进制下按行切一定切在真正的位置上。
     """
     p = Path(path)
     if not p.exists():
         return [], 0
     entries: list[dict] = []
     skipped = 0
-    with p.open("r", encoding="utf-8") as f:
+    with p.open("rb") as f:
+        if offset:
+            f.seek(offset)
         for raw in f:
             raw = raw.strip()
             if not raw:
                 continue
             try:
-                entries.append(json.loads(raw))
-            except json.JSONDecodeError:
+                entries.append(json.loads(raw.decode("utf-8")))
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 if not tolerate_tail:
                     raise
                 skipped += 1
     return entries, skipped
+
+
+def read_jsonl_spans(path, offset: int = 0) -> tuple[list[tuple[int, dict]], int]:
+    """逐行读，并带上**每一行在文件里的起始字节位置**。
+
+    用途只有一个，但很关键：压缩的时候要知道"我压到的那个点，在文件里是第几个字节"。
+    水位线必须落在**被压内容的末尾**，不是"压缩那一刻的文件末尾"——
+    那之后通常还有一堆没压过的原文，用文件末尾当水位线会把它们整段跳过。
+    """
+    p = Path(path)
+    if not p.exists():
+        return [], 0
+    out: list[tuple[int, dict]] = []
+    skipped = 0
+    with p.open("rb") as f:
+        if offset:
+            f.seek(offset)
+        while True:
+            at = f.tell()
+            raw = f.readline()
+            if not raw:
+                break
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                out.append((at, json.loads(stripped.decode("utf-8"))))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                skipped += 1
+    return out, skipped
 
 
 # ─────────────────────────── 锁 ─────────────────────────────

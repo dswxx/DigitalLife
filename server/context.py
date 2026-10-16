@@ -75,6 +75,8 @@ class Built:
     # 有了它，「账」就是可审计的：不信 session_entries 的话直接数这个列表。
     # 它不参与合并——合并会改变条数，那就没法用条数对账了。
     history: list[dict]
+    # 这次会话较早的部分是不是已经压成摘要了（界面要显示"已整理"）
+    compacted: bool
 
 
 def build_context(
@@ -112,12 +114,12 @@ def build_context(
             dropped=0,
             budget=window,
             history=[],
+            compacted=False,
         )
 
     safety = max(1024, round(window * safety_ratio))
-    persona_tokens = estimate_tokens(persona or "")
 
-    # ── system：时间感 + 长期记忆目录 + 更早会话的一行 ──
+    # ── system：时间感 + 本会话较早部分的摘要 + 长期记忆目录 + 更早会话的一行 ──
     now = int(time.time() * 1000)
     sys_parts: list[str] = []
     if persona:
@@ -126,6 +128,13 @@ def build_context(
         f"【现在】{fmt_day(now)} {fmt_clock(now)}\n"
         f"【你上次和他说话】{human_ago(_last_talked(life, session_id))}"
     )
+
+    # 本会话较早的部分：已经压成摘要的那一段。
+    # 放在 system 里而不是当成一条假的历史消息——它不是一轮真实的对话，
+    # 混进 messages 会让模型分不清那是谁说的，也会给 user/assistant 交替添麻烦。
+    own_summary = life.summary_text(session_id)
+    if own_summary:
+        sys_parts.append("【这次对话更早的部分，你只记得这些】\n" + own_summary)
 
     older = life.summaries(exclude_session=session_id)
     if older:
@@ -153,7 +162,10 @@ def build_context(
     fixed.append({"role": "user", "content": question})
     spent = sum(estimate_tokens(m["content"]) for m in fixed)
 
-    entries = [e for e in life.read_session(session_id) if e.get("kind") != KIND_SUMMARY]
+    # 只读水位线之后的原文：更老的部分已经压成摘要了（上面那段），
+    # 再解析一遍纯属浪费，而且会让"越老的生命越慢"。
+    entries = [e for e in life.read_session(session_id, only_tail=True)
+               if e.get("kind") != KIND_SUMMARY]
     tail: list[dict] = []
     kept = 0
     idx = len(entries)
@@ -199,6 +211,7 @@ def build_context(
         dropped=len(entries) - kept,
         budget=budget,
         history=tail,
+        compacted=bool(own_summary),
     )
 
 
@@ -214,13 +227,18 @@ def _entry_message(e: dict) -> dict:
 
 
 def _last_talked(life: Life, exclude_session: str) -> int:
-    """上一次说话是什么时候（不含当前这次会话）。"""
+    """上一次说话是什么时候（不含当前这次会话）。
+
+    只读每个会话的**尾巴**：更老的部分已经压成摘要了，而摘要覆盖到哪一刻
+    水位线里写着（`compactedThrough`）。所以这里不用把历史全部解析一遍。
+    """
     last = 0
     for sid in life.sessions():
         if sid == exclude_session:
             continue
-        for e in life.read_session(sid):
+        for e in life.read_session(sid, only_tail=True, warn=False):
             last = max(last, e.get("t", 0))
+        last = max(last, int(life.compaction(sid).get("compactedThrough") or 0))
     return last
 
 
