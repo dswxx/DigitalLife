@@ -45,9 +45,17 @@ SHOTS = "--shots" in sys.argv
 REAL_SRC = Path("D:/AAsanboxForDsh/data")
 TOKEN = "ui-test-token"
 BROWSERS = [
+    # Windows
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    # Linux（GitHub Actions 的 ubuntu runner 自带 Chrome）
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    # macOS
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ]
 
 

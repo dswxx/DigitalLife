@@ -26,6 +26,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import chat, memory, presets, sessions, settings as settings_mod, store, templates
+from . import __version__
 from .adapters import AdapterError, list_models
 from .adapters.transport import HttpxTransport
 from .life import Life, MEM_TYPES
@@ -152,7 +153,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
     def health(request: Request):
         return {
             "ok": True,
-            "version": "0.5.0",
+            "version": __version__,
             "apiVersion": API_VERSION,
             "dataVersion": presets.DATA_VERSION,
             "dataDir": str(_data_dir(request)),

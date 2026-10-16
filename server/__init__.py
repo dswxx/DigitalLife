@@ -1,18 +1,35 @@
 """圆桌 Roundtable · 后端（FastAPI）。
 
-分层（HTTP 只是最外面那层壳）：
+分层（HTTP 只是最外面那层壳），依赖方向是一条直线，**不许成环**：
 
-    main.py       FastAPI 应用、路由、三层安全、静态托管
-    actions/      各个接口的实现
-    adapters/     上游协议适配（OpenAI 兼容 / Anthropic），统一产出同一套事件
-    life.py       数字生命：身份 + 对话记录 + 长期记忆      ← 纯标准库
-    context.py    按预算组装一次请求的 system / messages    ← 纯标准库
-    store.py      原子写 JSON / 只追加 JSONL               ← 纯标准库
+    main.py       FastAPI 应用、路由、三层安全、静态托管      ← 最外层
+      ↓
+    chat.py       一次提问的全过程（并发席位 / 会议顺序 / 后台整理）
+      ↓
+    context.py    按预算组装一次请求的 system / messages
+    memory.py     压缩 / 记忆提取 / 召回（模型调用靠注入，所以能离线测）
+      ↓
+    sessions.py   桌子（谁和谁坐一起）
+    settings.py   设置与预算（密钥掩码、窗口、输出上限）
+    templates.py  人格蓝图
+    life.py       数字生命：身份 + 对话记录 + 长期记忆        ← 纯标准库
+      ↓
+    store.py      原子写 JSON / 只追加 JSONL / 按字节读尾巴  ← 纯标准库
+    text.py       token 估算 / 时间格式化（抽出来就是为了打断环）
+    model.py      模型调用的公共契约（ModelReply / ModelError）
+
+为什么 `text.py` 单独存在：`context` 要调 `memory` 做召回，`memory` 要估算 token
+和格式化时间戳——直接互相 import 就成环了。把这几样抽出来，方向就是直的。
 """
 
 import sys
 
-__version__ = "0.1.0"
+# **版本号只在这里改。** `/api/health` 和前端的页脚都读它，别再各写一份字面量
+# （写两份的下场就是有一天改了这里、页脚还显示旧版本）。
+#
+# 注意和「接口版本」（`main.API_VERSION`）是两件事：那个是给前端做兼容检查用的，
+# 只在接口形状变了的时候 +1；这个是产品版本。
+__version__ = "0.5.0"
 
 # ── 版本门槛 ──────────────────────────────────────────────
 #

@@ -65,7 +65,10 @@ onMounted(async () => {
         <button class="tab" :class="{ on: tab === 'settings' }" @click="go('settings')">设置</button>
       </nav>
       <div class="spacer"></div>
-      <div class="meta">{{ app.version }} · 数据 v{{ app.problem ? '?' : '8' }}</div>
+      <div class="meta">
+        <template v-if="app.ready">{{ app.version }} · 数据 v{{ app.dataVersion }}</template>
+        <template v-else-if="app.problem">连不上</template>
+      </div>
     </header>
 
     <main class="main">

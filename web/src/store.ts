@@ -35,6 +35,9 @@ export const useApp = defineStore('app', {
     ready: false,
     problem: '' as string,
     version: '',
+    /** 数据格式版本。**从 /api/health 读，不在前端写死**——
+     *  写死的话后端改了它，页脚还在骗人。 */
+    dataVersion: 0,
     dataDir: '',
     providers: [] as Provider[],
     advanced: {} as Advanced,
@@ -86,6 +89,7 @@ export const useApp = defineStore('app', {
       try {
         const health = await api.health()
         this.version = health.version
+        this.dataVersion = health.dataVersion
         this.dataDir = health.dataDir
         const b = await api.bootstrap()
         this.providers = b.settings.providers

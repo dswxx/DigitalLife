@@ -96,6 +96,7 @@ export interface StreamEvent {
   name?: string
   text?: string
   message?: string
+  error?: string
   content?: string
   reasoning?: string
   tokens?: number

@@ -128,7 +128,7 @@ function thinkLabel(seat: SeatState) {
           @click="toggleLife(l.id)"
         >
           {{ l.emoji }} {{ l.name }}
-          <span class="mono" style="margin-left: 5px">{{ app.lifeById(l.providerId)?.label || '' }}{{ l.model }}</span>
+          <span class="mono" style="margin-left: 5px">{{ app.providerById(l.providerId)?.label || '' }} {{ l.model }}</span>
         </button>
       </div>
     </div>

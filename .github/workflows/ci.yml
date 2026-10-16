@@ -1,0 +1,163 @@
+# 每次都跑：后端九套 + 前端构建与类型检查 + 密钥扫描
+#
+# 这套配置是照着老项目（Node 版）的 CI 改的，两条规矩原样带过来：
+#   1. **data/ 永远不许进版本库**——那里有 API Key 明文，而且是用户的数字人资产
+#   2. **粗扫疑似真实密钥**（形如 sk-xxxxx 的长串）
+#
+# 界面的真浏览器那套（dev/test_ui.py）也在跑：ubuntu runner 自带 Chrome，
+# 我们用调试端口起一个 headless 的，再用 CDP 连上去。
+#
+# ⚠️ 这份 YAML **没有在真的 GitHub runner 上跑过**（开发环境里没有 GitHub）。
+# 里面每个命令都在本地原样跑通并通过了，但第一次上 CI 时请留意有没有环境差异
+# （最可能出问题的是 Chrome 的路径和 --no-sandbox）。
+
+name: 自测
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: 后端（Python ${{ matrix.python }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 装依赖
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      # 前八套不需要联网、不需要浏览器，装了那三个依赖就能全跑
+      - name: 落盘 / 生命 / 上下文 / 记忆递减
+        run: python dev/selftest.py
+      - name: 预设提示词与老项目逐字一致
+        run: python dev/check_presets.py
+      - name: 文档和代码对得上吗
+        run: python dev/test_docs.py
+      - name: 迁移（含"老目录一个字节没变"）
+        run: python dev/test_migrate.py
+      - name: 上下文组装（真实生命 × 各种窗口）
+        run: python dev/test_context.py
+      - name: 压缩（水位线 / 推水位 / 坏模型）
+        run: python dev/test_memory.py
+      - name: 长期记忆（提取与召回）
+        run: python dev/test_longterm.py
+      - name: 适配器（两种协议的组装与解析）
+        run: python dev/test_adapters.py
+
+  end-to-end:
+    name: 端到端（真起服务 + 真流式）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 装依赖
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: 假上游 + 圆桌后端，走真 socket
+        run: python dev/test_http.py
+
+  frontend:
+    name: 前端（Node ${{ matrix.node }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 装依赖
+        run: npm ci
+        working-directory: web
+
+      # 类型检查要单独跑：vite 构建**不做类型检查**（它只转译），
+      # 所以"构建过了"不等于"类型是对的"
+      - name: 类型检查
+        run: npm run typecheck
+        working-directory: web
+
+      - name: 构建产物
+        run: npm run build
+        working-directory: web
+
+  ui:
+    name: 真浏览器
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install websockets   # 驱动浏览器要它（CDP over TCP）
+
+      - name: 构建前端（后端托管的是 web/dist）
+        run: npm ci && npm run build
+        working-directory: web
+
+      - name: 起一个 headless Chrome（runner 自带）
+        run: |
+          google-chrome --headless=new --remote-debugging-port=9333 \
+            --user-data-dir=/tmp/chrome-profile --no-sandbox --disable-gpu about:blank &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9333/json/version && break
+            sleep 1
+          done
+
+      - name: 真浏览器验收
+        run: python dev/test_ui.py --cdp-port 9333
+
+  scan:
+    name: 密钥泄漏扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 确认 data/ 从未进入版本库
+        run: |
+          if git log --all --name-only --pretty=format: | grep -q '^data/'; then
+            echo "::error::git 历史里出现了 data/ —— 那里有 API Key 明文"
+            exit 1
+          fi
+          echo "data/ 从未被提交 ✅"
+
+      - name: 确认密钥不会被提交
+        run: |
+          # 扫出形如 sk-xxxxx 的长串（排除测试里用的假 Key 和文档）
+          if git grep -nEI 'sk-[A-Za-z0-9_-]{24,}' -- . ':!dev' ':!*.md' ':!web'; then
+            echo "::error::源码里出现疑似真实 API Key"
+            exit 1
+          fi
+          echo "源码里没有真实密钥 ✅"
+
+      - name: 确认 data/ 还在 .gitignore 第一条
+        run: |
+          head -1 .gitignore | grep -q '^data/' || { echo "::error::data/ 不再是 .gitignore 的第一条"; exit 1; }
+          echo "data/ 仍然是第一条 ✅"
