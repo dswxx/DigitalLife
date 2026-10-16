@@ -164,7 +164,7 @@ def schedule_housekeeping(data_dir, lives: dict, session_id: str, settings: dict
             except Exception as e:  # noqa: BLE001 —— 后台失败绝不能影响对话
                 print(f"[整理] {life_id}/{session_id} 这次没成：{type(e).__name__}：{e}")
 
-    threading.Thread(target=work, daemon=True, name="roundtable-housekeeping").start()
+    threading.Thread(target=work, daemon=True, name="digitallife-housekeeping").start()
 
 
 def _is_bare(data_dir, life) -> bool:

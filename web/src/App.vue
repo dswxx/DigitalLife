@@ -58,7 +58,7 @@ onMounted(async () => {
 <template>
   <div class="shell">
     <header class="topbar">
-      <div class="brand">圆桌 <small>Roundtable</small></div>
+      <div class="brand">数字生命 <small>DigitalLife</small></div>
       <nav class="tabs">
         <button class="tab" :class="{ on: tab === 'library' }" @click="go('library')">数字人库</button>
         <button class="tab" :class="{ on: tab === 'chat' }" @click="go('chat')">圆桌对话</button>

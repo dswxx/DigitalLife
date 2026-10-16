@@ -86,7 +86,7 @@ def main() -> int:
     if not REAL_SRC.exists():
         print(f"找不到老数据 {REAL_SRC}")
         return 1
-    root = Path(os.environ.get("RT_CTX_DIR") or Path(__file__).resolve().parent / ".tmp-context")
+    root = Path(os.environ.get("DL_CTX_DIR") or Path(__file__).resolve().parent / ".tmp-context")
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)

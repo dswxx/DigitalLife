@@ -136,7 +136,7 @@ def test_synthetic_council(root: Path) -> None:
 
 
 def main() -> int:
-    root = Path(os.environ.get("RT_MIGRATE_DIR") or Path(__file__).resolve().parent / ".tmp-migrate")
+    root = Path(os.environ.get("DL_MIGRATE_DIR") or Path(__file__).resolve().parent / ".tmp-migrate")
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)

@@ -1,4 +1,4 @@
-"""启动圆桌。
+"""启动数字生命。
 
     py -3 run.py                  # 起服务，端口自己挑一个空着的
     py -3 run.py --port 8787      # 指定端口
@@ -39,7 +39,7 @@ def free_port(preferred: int) -> tuple[int, bool]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="启动圆桌")
+    ap = argparse.ArgumentParser(description="启动数字生命")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--data", default="data", help="数据目录（默认 ./data）")
     ap.add_argument("--reload", action="store_true", help="改了后端代码自动重启（开发用）")
@@ -77,7 +77,7 @@ def main() -> int:
     url = f"http://127.0.0.1:{port}"
 
     print()
-    print("  圆桌在跑：" + url)
+    print("  数字生命在跑：" + url)
     if moved:
         print(f"（{args.port} 端口被占了，换成了 {port}）")
     print(f"  数据目录：{data_dir}")

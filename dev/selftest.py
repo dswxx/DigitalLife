@@ -37,7 +37,7 @@ def check(cond, msg):
 def main() -> int:
     # 临时目录放在项目里（dev/.tmp），不放系统 temp：
     # 一来某些受限环境下系统 temp 写不进去，二来出问题时能直接翻文件看
-    root = Path(os.environ.get("RT_SELFTEST_DIR") or Path(__file__).resolve().parent / ".tmp")
+    root = Path(os.environ.get("DL_SELFTEST_DIR") or Path(__file__).resolve().parent / ".tmp")
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)

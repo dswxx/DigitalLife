@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------
-rem Roundtable launcher (double-clickable).
+rem DigitalLife launcher (double-clickable).
 rem
 rem KEEP THIS FILE PURE ASCII. cmd.exe reads a .cmd using the OEM
 rem code page (936 on a Chinese Windows) while the file itself is
@@ -11,7 +11,7 @@ rem text is printed by Python (run.py). dev/test_docs.py checks it.
 rem ---------------------------------------------------------------
 chcp 65001 >nul
 cd /d "%~dp0"
-title Roundtable
+title DigitalLife
 
 rem Python must speak UTF-8 to the console, otherwise its Chinese
 rem output turns into mojibake on a cp936 console.

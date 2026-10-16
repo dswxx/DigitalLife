@@ -81,7 +81,7 @@ def talk(life: Life, session_id: str, pairs: list[tuple[str, str]], *, at: int) 
 
 
 def main() -> int:
-    root = Path(os.environ.get("RT_LT_DIR") or Path(__file__).resolve().parent / ".tmp-longterm")
+    root = Path(os.environ.get("DL_LT_DIR") or Path(__file__).resolve().parent / ".tmp-longterm")
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
     humans = root / "humans"

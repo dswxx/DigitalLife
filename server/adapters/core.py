@@ -28,7 +28,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 # 连接开着却一个字节都不来，等多久算卡住。
 # 90 秒是老的默认值；测试里用环境变量调小，不然一个测试要等一分半。
-IDLE_MS = int(os.environ.get("RT_IDLE_MS") or 90_000)
+IDLE_MS = int(os.environ.get("DL_IDLE_MS") or 90_000)
 
 DEFAULT_MAX_TOKENS = 4096
 

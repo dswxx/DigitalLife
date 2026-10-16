@@ -80,15 +80,19 @@ def main() -> int:
 
     # ── 3. 文档里点名的文件 ──
     print("\n── 文档点名的文件都还在吗 ──")
-    pattern = re.compile(r"`((?:dev|server|web|docs)/[A-Za-z0-9_\-./]+|run\.py|启动圆桌\.cmd)`")
+    pattern = re.compile(r"`((?:dev|server|web|docs)/[A-Za-z0-9_\-./]+|run\.py|启动数字生命\.cmd)`")
     bad_paths: list[str] = []
     for name in DOCS:
-        for m in pattern.finditer(read(name)):
-            p = m.group(1)
-            if "*" in p or p.endswith("/"):
+        for line in read(name).splitlines():
+            # 讲历史的名字不算（"当时叫 xx"、"旧名 xx"），更新日志里会有这种句子
+            if any(w in line for w in ("当时", "旧名", "已改名", "以前的")):
                 continue
-            if not (ROOT / p).exists():
-                bad_paths.append(f"{name} → {p}")
+            for m in pattern.finditer(line):
+                p = m.group(1)
+                if "*" in p or p.endswith("/"):
+                    continue
+                if not (ROOT / p).exists():
+                    bad_paths.append(f"{name} → {p}")
     check(not bad_paths, "文档点名的文件都存在" + (f"，找不到：{bad_paths}" if bad_paths else ""))
 
     # ── 4. 可调参数表 vs 代码 ──
@@ -131,7 +135,7 @@ def main() -> int:
     # 于是"echo"被解码成一个多字节字符的尾巴 + "o"，报出
     # "'o' 不是内部或外部命令" —— 离真正的原因十万八千里。
     print("\n── Windows 启动脚本 ──")
-    for name in ("启动圆桌.cmd",):
+    for name in ("启动数字生命.cmd",):
         raw = (ROOT / name).read_bytes()
         high = [b for b in raw if b > 127]
         check(not high, f"{name} 是纯 ASCII（cmd.exe 按 GBK 读 UTF-8 会吃字符，"

@@ -10,7 +10,7 @@
      防的是 DNS rebinding——别的网站的 JS 让浏览器去请求 localhost 时，
      Host 头会是那个域名，一眼就能拦下来。
   3. **每次启动一个随机 token**：前端从注入的 HTML 里拿到它，
-     之后每个接口都要带 `x-roundtable-token`。
+     之后每个接口都要带 `x-digitallife-token`。
 
 密钥不出本机：所有返回里的 apiKey 都是掩码（`settings.public_view`）。
 """
@@ -43,20 +43,20 @@ TOKEN = secrets.token_urlsafe(24)
 
 # 前端 index.html 里要放这一串当占位符，**它把兜底值一起包含进去**：
 #
-#     <script>window.__RT_BOOT__ = /*__RT_BOOT__*/null;</script>
+#     <script>window.__DL_BOOT__ = /*__DL_BOOT__*/null;</script>
 #
 # 服务端把它整串换成真正的启动数据（含每次启动随机生成的令牌），结果是
-# `window.__RT_BOOT__ = {"apiVersion":…};`。没被注入时那行也是合法 JS（值为 null）。
+# `window.__DL_BOOT__ = {"apiVersion":…};`。没被注入时那行也是合法 JS（值为 null）。
 #
 # 三个坑，前两个都踩过：
-#   · 不能用光秃秃的 `__RT_BOOT__`——`window.__RT_BOOT__ = ...` 里的属性名会一起被换掉
-#   · 占位符不能只包注释（`= /*__RT_BOOT__*/null;` 这种）——只换注释的话会剩一个
+#   · 不能用光秃秃的 `__DL_BOOT__`——`window.__DL_BOOT__ = ...` 里的属性名会一起被换掉
+#   · 占位符不能只包注释（`= /*__DL_BOOT__*/null;` 这种）——只换注释的话会剩一个
 #     尾巴 `null`，变成 `= {…}null;`，整段内联脚本语法错误
-#   · 占位符更不能写在花括号**里面**（`= {/*__RT_BOOT__*/}`）——替换完是 `={{…}}`
+#   · 占位符更不能写在花括号**里面**（`= {/*__DL_BOOT__*/}`）——替换完是 `={{…}}`
 #
 # 这两种错的症状一模一样：**前端白屏 + 说连不上后端**，而报错在浏览器控制台里，
 # 离真正的原因很远。所以 test_http.py 里专门钉了"不能出现 {{ 或 }null"。
-BOOT_PLACEHOLDER = "/*__RT_BOOT__*/null"
+BOOT_PLACEHOLDER = "/*__DL_BOOT__*/null"
 
 # 那份 HTML **永远不许被浏览器缓存**：它带着"这次启动"的令牌。
 # 缓存住的话，服务重启一次（令牌变了）浏览器还在用旧的——表现是"突然连不上后端"，
@@ -118,7 +118,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
     `data_dir` 默认是**项目里的 data/**（按本文件位置算，不按当前目录算）——
     否则从别处启动、或者被别的东西改了 cwd，数据就会跑到别的地方去。
     """
-    app = FastAPI(title="圆桌 Roundtable", docs_url=None, redoc_url=None)
+    app = FastAPI(title="数字生命 DigitalLife", docs_url=None, redoc_url=None)
     app.state.token = token or TOKEN
     app.state.data_dir = Path(data_dir) if data_dir else DATA_DIR
     app.state.transport = HttpxTransport()
@@ -131,7 +131,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
         if host not in ALLOWED_HOSTS:
             return JSONResponse({"error": "只允许本机访问"}, status_code=403)
         if request.url.path.startswith("/api/"):
-            if request.headers.get("x-roundtable-token") != request.app.state.token:
+            if request.headers.get("x-digitallife-token") != request.app.state.token:
                 return JSONResponse(
                     {"error": "没有令牌或令牌不对。如果你是刷新页面之后变成这样，"
                               "说明服务重启过——刷新一下页面就好。"},
@@ -565,12 +565,12 @@ def _serve_index(token: str) -> str:
     index = WEB_DIR / "index.html"
     if not index.exists():
         return (
-            "<!doctype html><meta charset='utf-8'><title>圆桌</title>"
+            "<!doctype html><meta charset='utf-8'><title>数字生命</title>"
             "<body style='font-family:system-ui;padding:2rem;line-height:1.7'>"
-            "<h1>圆桌后端已经起来了</h1>"
+            "<h1>数字生命后端已经起来了</h1>"
             "<p>前端还没构建（<code>web/dist/index.html</code> 不存在）。</p>"
             "<p>可以先试：<code>/api/health</code>、<code>/api/bootstrap</code>。</p>"
-            f"<script>window.__RT_BOOT__={{apiVersion:{API_VERSION},token:{json.dumps(token)}}}</script>"
+            f"<script>window.__DL_BOOT__={{apiVersion:{API_VERSION},token:{json.dumps(token)}}}</script>"
         )
     html = index.read_text(encoding="utf-8")
     boot = json.dumps({"apiVersion": API_VERSION, "token": token, "dataVersion": presets.DATA_VERSION})

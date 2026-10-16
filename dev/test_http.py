@@ -4,7 +4,7 @@
 
     假上游（真的 HTTP 服务，说 OpenAI 兼容的 SSE）
         ↑ httpx（真连接）
-    圆桌后端（FastAPI + uvicorn，真的监听端口）
+    数字生命后端（FastAPI + uvicorn，真的监听端口）
         ↑ httpx（真连接）
     这个测试（扮演浏览器）
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # 依赖装在项目外（沙箱里 pip 装不进去），跑测试时手动指过去
-DEPS = Path(os.environ.get("RT_DEPS") or "D:/新建文件夹/rt-deps")
+DEPS = Path(os.environ.get("DL_DEPS") or "D:/新建文件夹/rt-deps")
 if DEPS.exists():
     sys.path.insert(0, str(DEPS))
 
@@ -129,7 +129,7 @@ def overlap(a: dict, b: dict) -> bool:
 
 
 def main() -> int:
-    root = Path(os.environ.get("RT_HTTP_DIR") or Path(__file__).resolve().parent / ".tmp-http")
+    root = Path(os.environ.get("DL_HTTP_DIR") or Path(__file__).resolve().parent / ".tmp-http")
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
     data_dir = root / "data"
@@ -162,8 +162,8 @@ def main() -> int:
         print("❌ 服务没起来")
         return 1
     base = f"http://127.0.0.1:{app_port}"
-    H = {"x-roundtable-token": TOKEN}
-    print(f"圆桌后端 http://127.0.0.1:{app_port}\n")
+    H = {"x-digitallife-token": TOKEN}
+    print(f"数字生命后端 http://127.0.0.1:{app_port}\n")
 
     try:
         # ── 1. 三层安全 ──
@@ -172,7 +172,7 @@ def main() -> int:
             r = c.get(f"{base}/api/health")
             check(r.status_code == 401, f"没有令牌 → 401（实际 {r.status_code}）")
             check("刷新" in r.json().get("error", ""), "而且告诉他刷新一下页面就好，不是一句「未授权」")
-            r = c.get(f"{base}/api/health", headers={"x-roundtable-token": "wrong"})
+            r = c.get(f"{base}/api/health", headers={"x-digitallife-token": "wrong"})
             check(r.status_code == 401, "令牌不对 → 401")
             r = c.get(f"{base}/api/health", headers={"Host": "evil.example.com", **H})
             check(r.status_code == 403, f"Host 不是本机 → 403（防 DNS rebinding，实际 {r.status_code}）")
@@ -204,8 +204,8 @@ def main() -> int:
         web = root / "webdist"
         web.mkdir(parents=True, exist_ok=True)
         (web / "index.html").write_text(
-            "<!doctype html><title>圆桌</title>"
-            "<script>window.__RT_BOOT__ = /*__RT_BOOT__*/null;</script>"
+            "<!doctype html><title>数字生命</title>"
+            "<script>window.__DL_BOOT__ = /*__DL_BOOT__*/null;</script>"
             "<div id=app></div>",
             encoding="utf-8")
         appmod.WEB_DIR = web  # 只影响这个测试进程

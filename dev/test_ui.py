@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-DEPS = Path(os.environ.get("RT_DEPS") or "D:/新建文件夹/rt-deps")
+DEPS = Path(os.environ.get("DL_DEPS") or "D:/新建文件夹/rt-deps")
 if DEPS.exists():
     sys.path.insert(0, str(DEPS))
 
@@ -271,7 +271,7 @@ def main() -> int:
     for i, arg in enumerate(sys.argv):
         if arg == "--cdp-port" and i + 1 < len(sys.argv):
             cdp_port = int(sys.argv[i + 1])
-    root = Path(os.environ.get("RT_UI_DIR") or Path(__file__).resolve().parent / ".tmp-ui")
+    root = Path(os.environ.get("DL_UI_DIR") or Path(__file__).resolve().parent / ".tmp-ui")
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
     data_dir = root / "data"
@@ -315,7 +315,7 @@ def main() -> int:
         print("❌ 后端没起来")
         return 1
     base = f"http://127.0.0.1:{app_port}"
-    H = {"x-roundtable-token": TOKEN}
+    H = {"x-digitallife-token": TOKEN}
 
     # 先聊一轮，好让对话页一打开就有东西看
     mock.set_script("mock-chat", text="**停。**你在给自己找理由。\n\n第一，先算成本；第二，别自我感动。")
@@ -355,10 +355,12 @@ def main() -> int:
         check(not br.eval("return document.body.scrollWidth > window.innerWidth + 4"),
               "没有横向滚动条（横向空间用起来了，没有溢出）")
         # 页脚的版本号是**从 /api/health 读的**，不是前端写死的——
-        # 盯着它，因为写死过一次（改了后端版本，页脚还在骗人）
+        # 盯着它，因为写死过一次（改了后端版本，页脚还在骗人）。
+        # 断言方式：跟接口报的值比，**不要写死版本号**（不然每次发版都得改测试）。
+        health = httpx.get(f"{base}/api/health", headers=H, timeout=10).json()
         foot = br.text(".meta")
-        check("0.5." in foot, f"页脚显示的是后端报的版本：{foot}")
-        check("数据 v8" in foot, f"数据版本也是从接口来的：{foot}")
+        check(health["version"] in foot, f"页脚显示的是后端报的版本 {health['version']}：{foot}")
+        check(f"数据 v{health['dataVersion']}" in foot, f"数据版本也是从接口来的：{foot}")
         if SHOTS:
             br.shot(root / "shots" / "1-library.png")
 

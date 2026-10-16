@@ -36,7 +36,7 @@ def check(cond, msg):
 
 def main() -> int:
     if not OLD.exists():
-        print(f"找不到旧文件：{OLD}（换机器时用 RT_OLD_SERVER 指过去）")
+        print(f"找不到旧文件：{OLD}（换机器时用 DL_OLD_SERVER 指过去）")
         return 1
     old_text = OLD.read_text(encoding="utf-8")
 

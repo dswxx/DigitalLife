@@ -73,7 +73,7 @@ def add_round(life: Life, session_id: str, q: str, a: str, *, at: int) -> None:
 
 
 def main() -> int:
-    root = Path(os.environ.get("RT_MEM_DIR") or Path(__file__).resolve().parent / ".tmp-memory")
+    root = Path(os.environ.get("DL_MEM_DIR") or Path(__file__).resolve().parent / ".tmp-memory")
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)

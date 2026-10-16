@@ -3,7 +3,7 @@
  *
  * 两件事值得说明：
  *
- * 1. **令牌从 window.__RT_BOOT__ 里拿。** 它是服务端每次启动随机生成的，
+ * 1. **令牌从 window.__DL_BOOT__ 里拿。** 它是服务端每次启动随机生成的，
  *    注入在 index.html 里。所以前端产物可以随便拷，但没有令牌就调不通接口。
  *
  * 2. **流式是一次一行读的，不是等全部算完。** `fetch` + `ReadableStream` 手动切行，
@@ -115,11 +115,11 @@ export interface StreamEvent {
 
 declare global {
   interface Window {
-    __RT_BOOT__?: { apiVersion: number; token: string; dataVersion: number }
+    __DL_BOOT__?: { apiVersion: number; token: string; dataVersion: number }
   }
 }
 
-export const boot = window.__RT_BOOT__ ?? { apiVersion: 0, token: '', dataVersion: 0 }
+export const boot = window.__DL_BOOT__ ?? { apiVersion: 0, token: '', dataVersion: 0 }
 
 /** 后端接口版本和我们对不上的时候，说人话让人刷新，而不是抛一堆解析错。 */
 export const API_VERSION = 4
@@ -137,7 +137,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...init,
     headers: {
       'content-type': 'application/json',
-      'x-roundtable-token': boot.token,
+      'x-digitallife-token': boot.token,
       ...(init.headers ?? {}),
     },
   })
@@ -213,7 +213,7 @@ export function ask(
   const done = (async () => {
     const res = await fetch('/api/ask', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-roundtable-token': boot.token },
+      headers: { 'content-type': 'application/json', 'x-digitallife-token': boot.token },
       body: JSON.stringify(payload),
       signal: ctl.signal,
     })
