@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import store
 from .life import new_id, now_ms
@@ -125,7 +126,6 @@ def load(data_dir, session_id: str) -> Session | None:
         return None
     return Session.from_json(store.read_json(p, {}))
 
-
 def save(data_dir, session: Session) -> None:
     session.updated_at = now_ms()
     store.write_json(session_path(data_dir, session.id), session.to_json())
@@ -141,6 +141,23 @@ def list_all(data_dir) -> list[Session]:
         if isinstance(got, dict) and got.get("id"):
             out.append(Session.from_json(got))
     return sorted(out, key=lambda s: s.updated_at, reverse=True)
+
+
+def summary(data_dir, session: Session) -> dict:
+    """给左侧栏那张小卡用的摘要：`N 轮 · M 位 · 什么时候动过`。
+
+    轮数从**记录里数**（每位生命每轮各记一条 `you`，所以数一位的就够了）——
+    桌子本身只记"有谁"，不记轮数，那份原文在生命自己的记录里。
+    """
+    rounds = 0
+    if session.seats:
+        from .life import KIND_YOU, Life
+
+        first = Life.load(Path(data_dir) / "humans" / session.seats[0]["lifeId"])
+        if (first.root / "identity.json").exists():
+            rounds = sum(1 for e in first.read_session(session.id, warn=False)
+                         if e.get("kind") == KIND_YOU)
+    return {**session.to_json(), "rounds": rounds, "seatCount": len(session.seats)}
 
 
 def delete(data_dir, session_id: str) -> bool:

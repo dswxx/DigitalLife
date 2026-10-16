@@ -169,7 +169,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
             "settings": settings_mod.public_view(st),
             "templates": [t.to_json() for t in templates.load_all(data_dir)],
             "lives": [_summary(data_dir, l) for l in Life.list_all(data_dir / "humans")],
-            "sessions": [s.to_json() for s in sessions.list_all(data_dir)],
+            "sessions": [sessions.summary(data_dir, s) for s in sessions.list_all(data_dir)],
             "memTypes": list(MEM_TYPES),
         }
 
@@ -434,7 +434,8 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.get("/api/sessions")
     def list_sessions(request: Request):
-        return [s.to_json() for s in sessions.list_all(_data_dir(request))]
+        data_dir = _data_dir(request)
+        return [sessions.summary(data_dir, s) for s in sessions.list_all(data_dir)]
 
     @app.post("/api/sessions")
     def create_session(request: Request, payload: dict = Body(...)):

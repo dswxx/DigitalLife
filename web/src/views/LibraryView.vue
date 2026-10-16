@@ -1,12 +1,14 @@
 <script setup lang="ts">
 /**
- * 数字人库。版面就两件事，**用横向空间**（不是一人一行）：
+ * 数字人库。**骨架照老界面**：
  *
- *   上半：人格模板（蓝图，不绑厂商、没有记忆）
- *   下半：按厂商分组的个体（真正活着的那些，各有各的记忆）
+ *   .page-head        标题 + 一句话说明
+ *   .row.wrap         一排按钮
+ *   .category-block*  一家一个方块（.category-head + .grid-cards）
+ *     .human-card     emoji + 名字 + 来源 + 一句话 + 标签 + 一排小按钮
  *
- * 「通用（裸模型直连）」并进模板区——裸模型本来就是"没有系统提示词的模板"，
- * 用它创建的个体落在对应厂商那一栏里。所以分类只剩两种语义。
+ * 多出来的是"蓝图 → 个体"这一层：最先一个方块放**人格蓝图**（不绑厂商、没有记忆），
+ * 后面的方块按厂商放**活着的个体**。所以个体卡上多一行"← 哪份蓝图"。
  */
 import { computed, ref } from 'vue'
 import { api } from '../api'
@@ -14,14 +16,14 @@ import { useApp } from '../store'
 import CreateWizard from '../components/CreateWizard.vue'
 
 const app = useApp()
-const emit = defineEmits<{ (e: 'open-chat'): void }>()
 
 const wizard = ref(false)
 const editing = ref<null | { id: string; name: string; emoji: string; tagline: string; system: string; bare: boolean }>(null)
 const problem = ref('')
-const confirmDelete = ref('')
+const confirmDel = ref('')
 
-const groups = computed(() => app.livesByProvider.filter((g) => g.lives.length || g.provider))
+const groups = computed(() => app.livesByProvider)
+const totalLives = computed(() => app.lives.length)
 
 function when(ms: number): string {
   if (!ms) return '还没聊过'
@@ -32,19 +34,23 @@ function when(ms: number): string {
   if (diff < 2 * 86_400_000) return '昨天'
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
   const d = new Date(ms)
-  return `${d.getMonth() + 1} 月 ${d.getDate()} 日`
+  return `${d.getMonth() + 1}月${d.getDate()}日`
 }
 
+/** 把某位放到桌上并切过去——库那张卡上「聊」做的事。 */
 async function chatWith(lifeId: string) {
   const session = await app.ensureSession()
-  const already = session.seats.some((s) => s.lifeId === lifeId)
-  if (!already) {
-    await app.setSeats([...session.seats.map((s) => ({ lifeId: s.lifeId, model: s.model })), { lifeId }])
+  const has = session.seats.some((s) => s.lifeId === lifeId)
+  if (!has) {
+    await app.setSeats([
+      ...session.seats.map((s) => ({ lifeId: s.lifeId, model: s.model })),
+      { lifeId },
+    ])
   } else {
     app.syncSeatsFromSession()
   }
-  app.view = 'chat'
-  emit('open-chat')
+  app.go('round')
+  await app.loadRounds()
 }
 
 async function saveTemplate() {
@@ -69,7 +75,7 @@ async function removeLife(id: string) {
   try {
     await api.deleteLife(id)
     await app.refreshLives()
-    confirmDelete.value = ''
+    confirmDel.value = ''
   } catch (e) {
     problem.value = e instanceof Error ? e.message : String(e)
   }
@@ -80,6 +86,7 @@ async function removeTemplate(id: string) {
     await api.deleteTemplate(id)
     await app.refreshTemplates()
     problem.value = ''
+    editing.value = null
   } catch (e) {
     problem.value = e instanceof Error ? e.message : String(e)
   }
@@ -87,114 +94,161 @@ async function removeTemplate(id: string) {
 </script>
 
 <template>
-  <div class="row" style="align-items: flex-start">
-    <div>
-      <h1>数字人库</h1>
-      <p class="hint">{{ app.templates.length }} 份人格蓝图 · {{ app.lives.length }} 位活着的个体</p>
-    </div>
-    <div class="spacer"></div>
-    <button class="btn primary" @click="wizard = true">＋ 新建</button>
-  </div>
-
-  <p v-if="problem" class="note bad" style="margin-top: 12px">{{ problem }}</p>
-
-  <!-- ── 人格模板 ── -->
-  <h2>人格模板<span class="hint" style="display: inline; margin-left: 8px">蓝图：不绑厂商、没有记忆</span></h2>
-  <div class="tpl-grid">
-    <button v-for="t in app.templates" :key="t.id" class="tpl" @click="editing = { ...t }">
-      <div class="emoji">{{ t.emoji }}</div>
-      <div class="name">
-        {{ t.name }}
-        <span v-if="t.bare" class="tag bare">裸模型</span>
+  <div class="stage-scroll">
+    <div class="page">
+      <div class="page-head">
+        <h1>数字人库</h1>
+        <p>
+          {{ app.templates.length }} 份人格蓝图，{{ totalLives }} 位活着的数字人，分属
+          {{ groups.length }} 个平台。蓝图不绑厂商、没有记忆；用它创建出来的才是会积累记忆的个体。
+        </p>
       </div>
-      <div class="tagline">{{ t.tagline || (t.bare ? '不发人格，看模型本来的样子' : '（没有一句话说明）') }}</div>
-      <div class="count mono">{{ app.templateUsage(t.id) }} 个生命 · 点开可改</div>
-    </button>
-  </div>
 
-  <!-- ── 各家厂商的个体 ── -->
-  <template v-if="app.lives.length">
-    <h2>活着的个体<span class="hint" style="display: inline; margin-left: 8px">同一份人格 + 某家 API = 一个有自己记忆的个体</span></h2>
-    <div v-for="g in groups" :key="g.providerId" class="vendor">
-      <div class="vendor-head">
-        <span class="dot"></span>
-        <strong>{{ g.provider?.label || g.provider?.name || '（平台已删除）' }}</strong>
-        <span class="n">{{ g.lives.length }} 位</span>
+      <div class="row wrap" style="margin-bottom: 18px">
+        <button class="btn primary" @click="wizard = true">＋ 新建数字人</button>
+        <button class="btn" @click="app.go('round')">去圆桌</button>
       </div>
-      <div v-if="!g.lives.length" class="empty">这家平台上还没有数字人</div>
-      <div v-else class="life-grid">
-        <div v-for="l in g.lives" :key="l.id" class="life">
-          <div class="head">
-            <span class="emoji">{{ l.emoji }}</span>
-            <span class="name">{{ l.name }}</span>
-            <span v-if="l.templateBare" class="tag bare">裸</span>
-            <div class="spacer"></div>
-            <span class="mono">{{ l.model }}</span>
-          </div>
-          <div class="from">← {{ l.templateName || '（模板已删除）' }}</div>
-          <div class="stats">
-            <span>聊过 {{ l.sessionCount }} 次</span>
-            <span>记 {{ l.memoryCount }} 条</span>
-            <span>{{ when(l.lastTalkedAt) }}</span>
-          </div>
-          <div class="acts">
-            <button class="btn sm primary" @click="chatWith(l.id)">聊</button>
-            <button class="btn sm" @click="app.openDrawer('memory', l.id)">记忆</button>
-            <button class="btn sm" @click="app.openDrawer('timeline', l.id)">一生</button>
-            <div class="spacer"></div>
-            <button
-              v-if="confirmDelete !== l.id"
-              class="btn sm ghost"
-              title="删掉他（连同他的记忆）"
-              @click="confirmDelete = l.id"
-            >
-              ✕
-            </button>
-            <template v-else>
-              <button class="btn sm danger" @click="removeLife(l.id)">真的删掉</button>
-              <button class="btn sm ghost" @click="confirmDelete = ''">算了</button>
-            </template>
+
+      <div v-if="problem" class="answer-note err">✕ {{ problem }}</div>
+
+      <!-- ── 方块一：人格蓝图 ── -->
+      <div class="category-block">
+        <div class="category-head">
+          <span class="category-icon">📐</span>
+          <span class="category-name">人格蓝图</span>
+          <span class="pill">不绑厂商 · 没有记忆</span>
+          <span class="pill">{{ app.templates.length }} 份</span>
+          <div style="flex: 1"></div>
+          <button class="btn tiny" @click="wizard = true">＋ 新建</button>
+        </div>
+        <div class="grid-cards">
+          <div
+            v-for="t in app.templates"
+            :key="t.id"
+            class="human-card is-tpl"
+            style="cursor: pointer"
+            @click="editing = { ...t }"
+          >
+            <div class="pc-head">
+              <span class="pc-emoji">{{ t.emoji }}</span>
+              <div>
+                <div class="pc-name">{{ t.name }}</div>
+                <div class="pc-sub">
+                  {{ app.templateUsage(t.id) }} 位用着它<template v-if="t.bare"> · 裸模型</template>
+                </div>
+              </div>
+            </div>
+            <div class="pc-tag">
+              {{ t.tagline || (t.bare ? '不发人格，看模型本来的样子' : '（没有一句话说明）') }}
+            </div>
+            <div class="pc-tags">
+              <span v-for="tag in t.tags" :key="tag" class="pill">{{ tag }}</span>
+              <span v-if="t.builtin" class="pill">内置</span>
+            </div>
+            <div class="pc-actions">
+              <button class="btn tiny" @click.stop="editing = { ...t }">编辑</button>
+              <button class="btn tiny" @click.stop="wizard = true">用它新建</button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </template>
 
-  <div v-else class="empty" style="margin-top: 20px">
-    还没有活着的数字人。点右上角「＋ 新建」——从一份人格蓝图 + 一家 API 开始。
+      <!-- ── 后面每个方块：一家平台，方块里是他的个体 ── -->
+      <div v-for="g in groups" :key="g.providerId" class="category-block">
+        <div class="category-head">
+          <span class="category-icon">{{ g.lives[0]?.emoji ?? '🔌' }}</span>
+          <span class="category-name">
+            {{ g.provider?.label || g.provider?.name || '（平台已删除）' }}
+          </span>
+          <span class="pill">{{ g.lives.length }} 位</span>
+          <div style="flex: 1"></div>
+          <button class="btn tiny" @click="wizard = true">＋ 新建</button>
+        </div>
+        <div v-if="!g.lives.length" class="hint" style="padding: 15px">
+          这家平台上还没有数字人。点右边「＋ 新建」从他的一份蓝图开始。
+        </div>
+        <div v-else class="grid-cards">
+          <div v-for="l in g.lives" :key="l.id" class="human-card">
+            <div class="pc-head">
+              <span class="pc-emoji">{{ l.emoji }}</span>
+              <div style="min-width: 0">
+                <div class="pc-name">{{ l.name }}</div>
+                <div class="pc-sub">← {{ l.templateName || '（蓝图已删除）' }} · {{ l.model }}</div>
+              </div>
+            </div>
+            <div class="pc-tag">
+              聊过 {{ l.sessionCount }} 次 · 记 {{ l.memoryCount }} 条 · {{ when(l.lastTalkedAt) }}
+            </div>
+            <div class="pc-tags">
+              <span v-if="l.templateBare" class="pill">裸模型</span>
+              <span v-for="tag in ['记忆独立']" :key="tag" class="pill">{{ tag }}</span>
+            </div>
+            <div class="pc-actions">
+              <button class="btn tiny" @click="chatWith(l.id)">聊</button>
+              <button class="btn tiny" @click="app.openModal('memory', l.id)">记忆</button>
+              <button class="btn tiny" @click="app.openModal('timeline', l.id)">一生</button>
+              <button
+                v-if="confirmDel !== l.id"
+                class="btn tiny"
+                title="删掉他（连同他的记忆）"
+                @click="confirmDel = l.id"
+              >
+                ✕
+              </button>
+              <button v-else class="btn tiny danger" @click="removeLife(l.id)">
+                真的删掉
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="!totalLives" class="hint" style="padding: 20px 0">
+        还没有活着的数字人。点上面的「＋ 新建数字人」——先挑一份蓝图，再选一家平台。
+      </div>
+    </div>
   </div>
 
-  <!-- ── 模板编辑 ── -->
-  <div v-if="editing" class="drawer-mask" @click.self="editing = null">
-    <div class="drawer" style="width: min(680px, 94vw)">
-      <div class="drawer-head">
-        <strong>改这份人格蓝图</strong>
-        <div class="spacer"></div>
-        <span class="mono">{{ app.templateUsage(editing.id) }} 位在用</span>
-        <button class="btn sm ghost" @click="editing = null">关闭</button>
+  <!-- ── 蓝图编辑（老界面的弹窗样式）── -->
+  <div v-if="editing" class="modal-mask" @click.self="editing = null">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>改这份人格蓝图</h3>
+        <div style="flex: 1"></div>
+        <span class="pill">{{ app.templateUsage(editing.id) }} 位在用</span>
       </div>
-      <div class="drawer-body">
-        <div class="grid2">
-          <div class="field"><label>名字</label><input v-model="editing.name" type="text" /></div>
-          <div class="field"><label>图标</label><input v-model="editing.emoji" type="text" /></div>
+      <div class="modal-body">
+        <div class="row" style="gap: 10px">
+          <div class="field" style="flex: 1">
+            <label>名字</label>
+            <input v-model="editing.name" type="text" />
+          </div>
+          <div class="field" style="width: 90px">
+            <label>图标</label>
+            <input v-model="editing.emoji" type="text" />
+          </div>
         </div>
-        <div class="field"><label>一句话</label><input v-model="editing.tagline" type="text" /></div>
-        <div class="field" style="align-items: start">
+        <div class="field">
+          <label>一句话</label>
+          <input v-model="editing.tagline" type="text" placeholder="会显示在库里的那张卡上" />
+        </div>
+        <div class="field">
           <label>系统提示词</label>
-          <textarea v-model="editing.system" rows="14" style="font-family: var(--mono); font-size: 12.5px"></textarea>
+          <textarea v-model="editing.system" rows="12" style="font-family: var(--mono); font-size: 12.5px"></textarea>
         </div>
-        <label class="row" style="gap: 8px; margin: 8px 0 4px">
-          <input type="checkbox" v-model="editing.bare" style="width: auto" />
+        <label class="check-row">
+          <input type="checkbox" v-model="editing.bare" />
           <span>纯基线：请求里一个 system 字段都不发（连时间感和记忆也不注入）</span>
         </label>
-        <div class="note">
-          改了内容会生成**新的**模板（id 由名字+正文算出来），用着它的 {{ app.templateUsage(editing.id) }} 位会**自动跟着走**；
-          旧文件会被删掉，不会在库里留两份看着像多了一个。
-        </div>
+        <p class="field hint">
+          改了内容会生成新的蓝图（id 由名字 + 正文算出来），用着它的
+          {{ app.templateUsage(editing.id) }} 位会**自动跟着走**；旧文件会删掉，不会留两份。
+        </p>
       </div>
-      <div class="row" style="padding: 12px 18px; border-top: 1px solid var(--line); background: var(--panel)">
+      <div class="modal-foot">
         <button class="btn danger" @click="removeTemplate(editing.id)">删掉这份蓝图</button>
-        <div class="spacer"></div>
+        <div style="flex: 1"></div>
+        <button class="btn" @click="editing = null">取消</button>
         <button class="btn primary" @click="saveTemplate">保存</button>
       </div>
     </div>

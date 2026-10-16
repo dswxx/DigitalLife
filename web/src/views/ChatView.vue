@@ -1,206 +1,216 @@
 <script setup lang="ts">
 /**
- * 圆桌对话。核心观感是**多个席位同时出字**，所以：
+ * 圆桌对话。**骨架照老界面**：
  *
- *   · 事件按 `seatNo` 分发到各自的卡片（并排模式下它们是交错的）
- *   · 边收边渲染（不是等整轮算完）
- *   · 思考过程折起来（推理模型会吐很长），但不藏起来
- *   · 黄条在这一轮里不重复（后端已经按会话去重过）
+ *   .thread-head  标题（可改名）+ 「N 位」+ 并排/会议 分段
+ *   .seat-bar     席位卡（点一下改配置）+「＋ 添加席位」
+ *   .timeline     可滚动：一轮一轮往下堆（.round = 提问气泡 + 回答网格）
+ *   .composer     底部输入区
+ *
+ * 老界面就是这么摆的，所以看起来是同一个东西。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { useApp } from '../store'
 import { renderMarkdown } from '../md'
-import type { SeatState } from '../store'
 
 const app = useApp()
-const emit = defineEmits<{ (e: 'need-lives'): void }>()
-const picking = ref(false)
-const openThink = ref<Record<number, boolean>>({})
-
-onMounted(async () => {
-  if (!app.currentSessionId && app.sessions.length) app.currentSessionId = app.sessions[0].id
-  app.syncSeatsFromSession()
-  // 回到这一页就把上次说过的话读回来——不然切走再切回来是空卡片，
-  // 看着像"他没说过话"。
-  await loadHistory()
-})
+const title = ref('')
 
 const session = computed(() => app.currentSession)
 const mode = computed(() => session.value?.mode ?? 'parallel')
 
-async function toggleLife(lifeId: string) {
-  const current = session.value?.seats.map((s) => ({ lifeId: s.lifeId, model: s.model })) ?? []
-  const has = current.some((s) => s.lifeId === lifeId)
-  const next = has ? current.filter((s) => s.lifeId !== lifeId) : [...current, { lifeId }]
-  await app.setSeats(next)
-}
+const EXAMPLES = [
+  '我三十三岁，想辞掉稳定工作去写小说，你怎么看？',
+  '读了很多书却记不住，问题出在哪？',
+  '人到中年还该不该追求「不平庸」？',
+]
 
-async function setMode(next: 'parallel' | 'council') {
-  await app.setMode(next)
-}
-
-async function newTable() {
-  const created = await api.createSession({ title: '新的圆桌', mode: 'parallel', seats: [] })
-  app.sessions = [created, ...app.sessions]
-  app.currentSessionId = created.id
-  app.syncSeatsFromSession()
-}
-
-async function loadHistory() {
-  // 把这次会话里"他说过的话"读回来铺在卡片上——不然切走再切回来就空了
-  if (!session.value) return
-  let lastYouText = ''
-  for (const seat of app.seats) {
-    try {
-      const got = await api.session(seat.lifeId, session.value.id, true)
-      const entries = (got.entries ?? []).filter((e: any) => e.kind !== 'summary')
-      const lastSelf = [...entries].reverse().find((e: any) => e.kind === 'self')
-      const lastYou = [...entries].reverse().find((e: any) => e.kind === 'you')
-      seat.text = lastSelf?.text ?? ''
-      seat.reasoning = lastSelf?.reasoning ?? ''
-      seat.tokens = lastSelf?.tokens ?? 0
-      seat.model = lastSelf?.model ?? seat.model
-      if (lastYou) {
-        seat.notices = []
-        lastYouText = lastYou.text
-      }
-    } catch {
-      /* 读不到就空着，不拦着用户提问 */
-    }
+onMounted(async () => {
+  if (!app.sessions.length) await app.refreshSessions()
+  if (!app.currentSessionId && app.sessions.length) {
+    app.currentSessionId = app.sessions[0].id
+    app.syncSeatsFromSession()
   }
-  if (lastYouText) app.lastQuestion = lastYouText
+  title.value = session.value?.title ?? '新的圆桌'
+  if (!app.rounds.length) await app.loadRounds()
+})
+
+watch(
+  () => app.currentSessionId,
+  async () => {
+    title.value = session.value?.title ?? '新的圆桌'
+    await app.loadRounds()
+  },
+)
+
+async function rename() {
+  const s = session.value
+  if (!s) return
+  const updated = await api.updateSession(s.id, { title: title.value || '新的圆桌' })
+  app.sessions = app.sessions.map((x) => (x.id === updated.id ? updated : x))
+}
+
+function useExample(text: string) {
+  app.question = text
 }
 
 function onKey(e: KeyboardEvent) {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+  // Enter 发送、Shift+Enter 换行——老界面提示行就是这么写的
+  if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     void app.sendQuestion()
   }
 }
 
-function thinkLabel(seat: SeatState) {
-  return `思考过程 · ${seat.reasoning.length} 字`
+function fmtTime(ms: number) {
+  const d = new Date(ms)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 </script>
 
 <template>
-  <div class="row" style="align-items: flex-start">
-    <div>
-      <h1>圆桌对话</h1>
-      <p class="hint">
-        {{ session ? `${session.seats.length} 个席位 · ${mode === 'council' ? '会议：按座位顺序，后面的人听得到前面的人' : '并排：同时听到同一句问题，互相听不到这一轮的回答'}` : '还没有桌子' }}
-      </p>
+  <div class="thread-head">
+    <input
+      v-model="title"
+      class="thread-title-input"
+      maxlength="40"
+      :disabled="!session"
+      :title="
+        session
+          ? '点一下可以改名字'
+          : '桌上还没人。加一位进来，这张桌子才真的存在，那时候再改名'
+      "
+      @change="rename"
+    />
+    <span class="pill">🗣️ {{ app.seats.length }} 位</span>
+    <div style="flex: 1"></div>
+    <div class="mode-switch">
+      <button :class="{ on: mode === 'parallel' }" @click="app.setMode('parallel')">并排作答</button>
+      <button :class="{ on: mode === 'council' }" @click="app.setMode('council')">圆桌会议</button>
     </div>
-    <div class="spacer"></div>
-    <button class="btn" @click="newTable">＋ 新建圆桌</button>
   </div>
 
-  <!-- ── 席位 ── -->
-  <div class="card pad" style="margin-top: 14px">
-    <div class="row wrap" style="gap: 10px">
-      <div class="seat-strip grow">
-        <template v-if="app.seats.length">
-          <span v-for="s in app.seats" :key="s.seatNo" class="seat-chip">
-            <span>{{ s.emoji }}</span><strong>{{ s.name }}</strong>
-            <span class="mono">{{ s.model }}</span>
-            <button class="x" title="移出这张桌子" @click="toggleLife(s.lifeId)">✕</button>
-          </span>
-        </template>
-        <span v-else class="hint">这张桌子上还没有人——点右边「加人」</span>
+  <div class="seat-bar">
+    <div
+      v-for="seat in app.seats"
+      :key="seat.seatNo"
+      class="seat-chip"
+      title="点一下改这位的配置"
+      @click="app.openModal('speaker', String(seat.seatNo))"
+    >
+      <span class="av">{{ seat.emoji }}</span>
+      <div class="meta">
+        <div class="nm">{{ seat.name }}</div>
+        <div class="md">{{ seat.model || '没选模型' }}</div>
       </div>
-      <button class="btn" @click="picking = !picking">加人</button>
-      <button class="btn sm" :class="{ primary: mode === 'parallel' }" @click="setMode('parallel')">并排</button>
-      <button class="btn sm" :class="{ primary: mode === 'council' }" @click="setMode('council')">会议</button>
+      <button class="seat-del" title="移出这张桌子" @click.stop="app.removeSeat(seat.seatNo)">✕</button>
     </div>
+    <button class="seat-chip add" @click="app.openModal('speaker', '0')">＋ 添加席位</button>
+  </div>
 
-    <div v-if="picking" style="margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 12px">
-      <div v-if="!app.lives.length" class="empty">
-        还没有数字人。
-        <button class="btn sm" style="margin-left: 8px" @click="emit('need-lives')">去数字人库新建一个</button>
-      </div>
-      <div v-else class="row wrap" style="gap: 6px">
-        <button
-          v-for="l in app.lives"
-          :key="l.id"
-          class="btn sm"
-          :class="{ primary: app.seats.some((s) => s.lifeId === l.id) }"
-          @click="toggleLife(l.id)"
-        >
-          {{ l.emoji }} {{ l.name }}
-          <span class="mono" style="margin-left: 5px">{{ app.providerById(l.providerId)?.label || '' }} {{ l.model }}</span>
+  <div class="timeline">
+    <!-- 空状态：老界面那句「圆桌已经摆好，就等你开口」 -->
+    <div v-if="!app.rounds.length && !app.loading" class="empty">
+      <div class="big">🎙️</div>
+      <h3>圆桌已经摆好，就等你开口</h3>
+      <p>
+        {{
+          app.seats.length
+            ? '同一个问题会同时送到下面每一位那里，谁先想清楚谁先开口。'
+            : '先从上面「＋ 添加席位」放几位数字人上来。'
+        }}
+      </p>
+      <div class="row wrap" style="justify-content: center; margin-top: 14px">
+        <button v-for="(ex, i) in EXAMPLES" :key="i" class="btn tiny" @click="useExample(ex)">
+          {{ ex }}
         </button>
       </div>
     </div>
-  </div>
 
-  <!-- ── 上一轮问了什么（问句是对话的一半，不能只有回答）── -->
-  <div v-if="app.lastQuestion" class="card pad" style="margin-top: 14px">
-    <div class="hint" style="margin-bottom: 4px">上一轮你问的</div>
-    <div style="white-space: pre-wrap">{{ app.lastQuestion }}</div>
-  </div>
-
-  <!-- ── 回答 ── -->
-  <div v-if="app.seats.length" class="answers" style="margin-top: 14px">
-    <div v-for="seat in app.seats" :key="seat.seatNo" class="card seat-card">
-      <div class="bar">
-        <span>{{ seat.emoji }}</span>
-        <strong>{{ seat.name }}</strong>
-        <span class="model">{{ seat.model }}</span>
-        <div class="spacer"></div>
-        <span v-if="seat.running" class="tag">作答中…</span>
-        <span v-else-if="seat.error" class="tag" style="color: var(--bad-ink); border-color: var(--bad-line)">失败</span>
+    <div v-for="rnd in app.rounds" :key="rnd.t" class="round">
+      <div class="ask-bubble">
+        <div class="inner">{{ rnd.question }}</div>
       </div>
+      <div class="ask-meta">{{ fmtTime(rnd.t) }}</div>
 
-      <div v-if="seat.notices.length" class="notes" style="margin-top: 10px">
-        <div v-for="(n, i) in seat.notices" :key="i" class="note">{{ n }}</div>
-      </div>
+      <div class="answers">
+        <div v-for="a in rnd.answers" :key="a.seatNo" class="answer" :class="{ err: !!a.error }">
+          <div class="answer-head">
+            <span class="av">{{ a.emoji }}</span>
+            <div>
+              <div class="nm">{{ a.name }}</div>
+              <div class="sub">{{ a.model }}</div>
+            </div>
+            <div class="spacer"></div>
+            <span v-if="a.running" class="pill">作答中…</span>
+            <button class="btn tiny" title="看他的记忆" @click="app.openModal('memory', a.lifeId)">
+              记忆
+            </button>
+          </div>
 
-      <details v-if="seat.reasoning" class="think" :open="openThink[seat.seatNo]">
-        <summary @click="openThink[seat.seatNo] = !openThink[seat.seatNo]">
-          {{ thinkLabel(seat) }}（点开看）
-        </summary>
-        <div class="txt">{{ seat.reasoning }}</div>
-      </details>
+          <div v-for="(n, i) in a.notices" :key="i" class="answer-note">⚠ {{ n }}</div>
 
-      <div v-if="seat.error" class="notes">
-        <div class="note bad">{{ seat.error }}</div>
-      </div>
+          <details v-if="a.reasoning" class="think">
+            <summary>思考过程 · {{ a.reasoning.length }} 字</summary>
+            <div class="think-body">{{ a.reasoning }}</div>
+          </details>
 
-      <div class="body">
-        <div v-if="seat.text" v-html="renderMarkdown(seat.text)"></div>
-        <span v-else-if="seat.running" class="cursor"></span>
-        <p v-else-if="!seat.error" class="hint">还没说话。问一句试试。</p>
-      </div>
+          <div v-if="a.error" class="answer-note err">✕ {{ a.error }}</div>
 
-      <div v-if="seat.text || seat.ms || seat.tokens" class="foot">
-        <span v-if="seat.ms">{{ (seat.ms / 1000).toFixed(1) }}s</span>
-        <span v-if="seat.tokens">{{ seat.tokens }} token 输出</span>
-        <span v-if="seat.window">窗口 {{ seat.window }}（{{ seat.keptEntries ?? 0 }} 条原文{{ seat.droppedEntries ? `，砍了 ${seat.droppedEntries}` : '' }}）</span>
-        <span v-if="seat.finishReason === 'length'" style="color: var(--warn-ink)">被输出上限截断</span>
+          <div class="answer-body">
+            <div v-if="a.text" v-html="renderMarkdown(a.text)"></div>
+            <span v-else-if="a.running" class="cursor">▍</span>
+            <p v-else-if="!a.error" class="composer-hint" style="margin: 0">还没说话。</p>
+          </div>
+
+          <div v-if="a.text || a.ms || a.tokens" class="answer-foot">
+            <span v-if="a.ms">{{ (a.ms / 1000).toFixed(1) }}s</span>
+            <span v-if="a.tokens">{{ a.tokens }} token</span>
+            <span v-if="a.window">窗口 {{ a.window }} · 带了 {{ a.keptEntries ?? 0 }} 条原文</span>
+            <div class="spacer"></div>
+            <span v-if="a.finishReason === 'length'" style="color: var(--warn)">
+              被输出上限截断
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
-  <div v-else class="empty" style="margin-top: 14px">
-    先在上面「加人」把要说话的数字人放上桌。
-  </div>
-
-  <!-- ── 提问 ── -->
-  <div class="askbar">
-    <textarea
-      v-model="app.question"
-      :disabled="!app.seats.length"
-      :placeholder="app.seats.length ? '问一句…（Ctrl+Enter 发送）' : '先加人'"
-      @keydown="onKey"
-    ></textarea>
-    <div class="row" style="margin-top: 8px">
-      <button class="btn ghost sm" @click="loadHistory">读回这次会话他说过的话</button>
-      <div class="spacer"></div>
+  <div class="composer">
+    <div class="composer-inner">
+      <textarea
+        v-model="app.question"
+        :disabled="!app.seats.length"
+        :placeholder="
+          app.seats.length
+            ? '把你的问题写在这里，一次发给圆桌上的所有人……'
+            : '先从上面添加席位，再开口'
+        "
+        @keydown="onKey"
+      ></textarea>
       <button v-if="app.roundRunning" class="btn danger" @click="app.stop()">停下</button>
-      <button class="btn primary" :disabled="!app.seats.length || app.roundRunning || !app.question.trim()" @click="app.sendQuestion()">
-        {{ app.roundRunning ? '作答中…' : '提问' }}
+      <button
+        v-else
+        class="btn primary"
+        :disabled="!app.seats.length || !app.question.trim()"
+        @click="app.sendQuestion()"
+      >
+        发给全桌
       </button>
+    </div>
+    <div class="composer-hint">
+      <span v-if="!app.seats.length">⚠ 还没有席位，点上面的「＋ 添加席位」去放人</span>
+      <span v-else>
+        模式：{{
+          mode === 'council' ? '圆桌会议（按顺序，后面的人听得到前面）' : '并排作答（同时答，互相听不到）'
+        }}
+        · Enter 发送 · Shift+Enter 换行
+      </span>
+      <div class="spacer"></div>
+      <span>历史：{{ app.rounds.length }} 轮</span>
     </div>
   </div>
 </template>

@@ -1,95 +1,85 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+/**
+ * 外壳。**结构就是老界面那个**：
+ *
+ *   .app
+ *   ├── aside.sidebar   左侧栏（品牌 / 新建圆桌 / 会话列表 / 三个导航 / 配色）
+ *   └── main.stage      主区（圆桌 / 数字人库 / 模型与密钥）
+ *
+ * 区别只在主区里放什么：老界面三块，这一版还是那三块，
+ * 只是"数字人"多了一层概念（蓝图 → 个体），所以库那一页多一个方块。
+ */
+import { onMounted, watch } from 'vue'
 import { useApp } from './store'
-import LibraryView from './views/LibraryView.vue'
+import Sidebar from './components/Sidebar.vue'
 import ChatView from './views/ChatView.vue'
+import LibraryView from './views/LibraryView.vue'
 import SettingsView from './views/SettingsView.vue'
-import MemoryDrawer from './views/MemoryDrawer.vue'
-import TimelineDrawer from './views/TimelineDrawer.vue'
+import MemoryModal from './views/MemoryModal.vue'
+import TimelineModal from './views/TimelineModal.vue'
+import SpeakerModal from './views/SpeakerModal.vue'
 
 const app = useApp()
-const tab = ref<'library' | 'chat' | 'settings'>('library')
 
-/**
- * 地址栏里记住"我在哪一页"（`#/chat`、`#/library`、`#/life/<id>/memory`…）。
- *
- * 不做的话，用户在对话页按一下刷新就回到首页、正在看的那位数字人的记忆也关了——
- * 这种"随手刷一下就丢"很难解释。
- */
+/** 能写进地址栏的抽屉（打开它 = 换个地址）。席位弹窗不进来：
+ *  它属于"正在改桌子"，刷新之后还停在那儿反而碍事。 */
+const DEEP = ['memory', 'timeline']
+
+/** 地址栏是**唯一的导航真相**：`#/round` / `#/humans` / `#/settings`，
+ *  抽屉再挂一段 `#/humans/memory/<谁>`。
+ *  不做的话，在圆桌上按一下刷新就回首页了。 */
 function parseHash() {
-  // 去掉可能挂在 hash 里的查询串（`#/chat?_=123`）——防缓存的参数有可能拼在这儿
-  const clean = location.hash.replace(/^#\/?/, '').split('?')[0]
-  const parts = clean.split('/').filter(Boolean)
-  const first = parts[0] ?? 'library'
-  tab.value = first === 'chat' ? 'chat' : first === 'settings' ? 'settings' : 'library'
-  app.view = tab.value
-  if (first === 'life' && parts[1]) {
-    const kind = parts[2] === 'timeline' ? 'timeline' : 'memory'
-    app.openDrawer(kind, parts[1])
-  } else {
-    app.closeDrawer()
-  }
+  const parts = location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean)
+  const first = parts[0]
+  app.view = first === 'humans' ? 'humans' : first === 'settings' ? 'settings' : 'round'
+  if (DEEP.includes(parts[1]) && parts[2]) app.openModal(parts[1] as 'memory' | 'timeline', parts[2])
+  else if (DEEP.includes(app.modal)) app.closeModal()
 }
 
-function setHash(next: string) {
-  if (location.hash !== next) location.hash = next
-  else parseHash()
+/** 反过来：状态一变就把地址栏写上（一个改动入口，不在别处手写 hash）。 */
+function syncHash() {
+  const want =
+    app.modal && DEEP.includes(app.modal) && app.modalLifeId
+      ? `#/${app.view}/${app.modal}/${app.modalLifeId}`
+      : `#/${app.view}`
+  if (location.hash !== want) location.hash = want
 }
 
-function go(where: 'library' | 'chat' | 'settings') {
-  setHash(`#/${where}`)
-}
-
-watch(
-  () => [app.drawer, app.drawerLifeId],
-  ([kind, id]) => {
-    if (kind && id) setHash(`#/life/${id}/${kind}`)
-    else if (tab.value === 'library' && app.drawer === '' && location.hash.startsWith('#/life')) setHash('#/library')
-  },
-)
+watch([() => app.view, () => app.modal, () => app.modalLifeId], syncHash)
 
 onMounted(async () => {
   parseHash()
   window.addEventListener('hashchange', parseHash)
   await app.boot()
+  syncHash()
 })
 </script>
 
 <template>
-  <div class="shell">
-    <header class="topbar">
-      <div class="brand">数字生命 <small>DigitalLife</small></div>
-      <nav class="tabs">
-        <button class="tab" :class="{ on: tab === 'library' }" @click="go('library')">数字人库</button>
-        <button class="tab" :class="{ on: tab === 'chat' }" @click="go('chat')">圆桌对话</button>
-        <button class="tab" :class="{ on: tab === 'settings' }" @click="go('settings')">设置</button>
-      </nav>
-      <div class="spacer"></div>
-      <div class="meta">
-        <template v-if="app.ready">{{ app.version }} · 数据 v{{ app.dataVersion }}</template>
-        <template v-else-if="app.problem">连不上</template>
-      </div>
-    </header>
+  <div class="app">
+    <Sidebar />
 
-    <main class="main">
-      <div class="wrap">
-        <div v-if="app.problem" class="note bad" style="margin-bottom: 14px">
-          <strong>连不上后端：</strong>{{ app.problem }}
-          <div class="hint">
-            如果你是刷新页面之后变成这样，多半是服务重启过（令牌变了）——再刷新一次就好。
-          </div>
-        </div>
-        <div v-else-if="!app.ready" class="empty">正在读取…</div>
-
-        <template v-else>
-          <LibraryView v-if="tab === 'library'" @open-chat="go('chat')" />
-          <ChatView v-else-if="tab === 'chat'" @need-lives="go('library')" />
-          <SettingsView v-else />
-        </template>
+    <main class="stage">
+      <div v-if="!app.ready" class="timeline">
+        <p class="composer-hint">正在读取…</p>
       </div>
+
+      <div v-else-if="app.problem" class="timeline">
+        <div class="answer-note err">连不上后端：{{ app.problem }}</div>
+        <p class="composer-hint">
+          如果你是刷新页面之后变成这样，多半是服务重启过（令牌变了）——再刷新一次就好。
+        </p>
+      </div>
+
+      <template v-else>
+        <ChatView v-if="app.view === 'round'" />
+        <LibraryView v-else-if="app.view === 'humans'" />
+        <SettingsView v-else />
+      </template>
     </main>
 
-    <MemoryDrawer v-if="app.drawer === 'memory'" :life-id="app.drawerLifeId" @close="app.closeDrawer()" />
-    <TimelineDrawer v-if="app.drawer === 'timeline'" :life-id="app.drawerLifeId" @close="app.closeDrawer()" />
+    <MemoryModal v-if="app.modal === 'memory'" />
+    <TimelineModal v-if="app.modal === 'timeline'" />
+    <SpeakerModal v-if="app.modal === 'speaker'" />
   </div>
 </template>
