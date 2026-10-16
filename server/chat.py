@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from . import context, sessions, settings as settings_mod, store, templates
+from . import context, memory, sessions, settings as settings_mod, store, templates
 from .adapters import AdapterError, stream_chat
 from .adapters.core import IDLE_MS
 from .life import Life, new_id, now_ms
@@ -122,7 +122,97 @@ def ask(data_dir, *, session_id: str, question: str, settings: dict, transport,
         yield from _run_parallel(data_dir, session, seats, lives, question, rnd, settings, transport)
 
     sessions.touch(data_dir, session_id)
+    # 答完了 → **在后台**看看该不该整理（压缩 + 提记忆）。
+    # 设计文档那条硬规矩的落点：请求路径永远不调模型做压缩。
+    schedule_housekeeping(data_dir, lives, session_id, settings, transport)
     yield {"type": "round_done", "roundId": rnd.id, "at": rnd.at}
+
+
+# ═══════════════ 后台整理：他是在聊天里慢慢长出记忆的 ═══════════════
+#
+# 没有这一段，聊天记录就只是记录：聊得再久，旧的部分只会被**裁剪**掉
+# （裁剪是保底，不调模型、但也不留痕），长记忆永远不会自己长出来。
+# 有了它才是设计文档里那句话："压缩发生在两轮之间的空隙里"。
+#
+# 三条自律：
+#   · **不阻塞**：起一个守护线程，用户完全无感（答案早就推给他了）
+#   · **不静默**：整理的结果（压到哪儿、记住了什么）在"一生"那一页看得到，
+#     花的 token 也进账
+#   · **失败不吵**：这次没整理成就下次再试——原文永远在，整理是幂等的派生物
+
+
+def schedule_housekeeping(data_dir, lives: dict, session_id: str, settings: dict, transport) -> None:
+    """一轮答完之后，把这几位生命的"整理"丢到后台去。
+
+    一位生命一个任务、串行跑：并排模式下有七个席位，要是并行发七次模型调用，
+    每轮结束都会有一次小高峰。串行慢一点，但花的是同一笔钱，而且安静。
+
+    **裸模型不整理**：设计文档说了它是对打的探针，不是陪伴，不积累记忆。
+    """
+    targets = []
+    for life in lives.values():
+        if _is_bare(data_dir, life):
+            continue
+        targets.append(life.id)
+    if not targets:
+        return
+
+    def work():
+        for life_id in targets:
+            try:
+                run_housekeeping(data_dir, life_id, session_id, settings, transport)
+            except Exception as e:  # noqa: BLE001 —— 后台失败绝不能影响对话
+                print(f"[整理] {life_id}/{session_id} 这次没成：{type(e).__name__}：{e}")
+
+    threading.Thread(target=work, daemon=True, name="roundtable-housekeeping").start()
+
+
+def _is_bare(data_dir, life) -> bool:
+    tpl = templates.load(data_dir, life.identity.get("templateId") or "")
+    return bool(tpl and tpl.bare)
+
+
+def housekeeping_budget(settings: dict, life) -> tuple[int, int, int]:
+    """算这位生命这次能用多少预算：`(窗口, 输出上限, 留给历史的额度)`。
+
+    和请求路径用的是**同一套算法**（`settings.resolve_*` + `context` 里那条预算线），
+    不然"水位线"两边对不上：前台以为还有余量、后台以为该压了。
+    """
+    provider = settings_mod.provider(settings, life.identity.get("providerId"))
+    model = life.identity.get("model") or ""
+    window = settings_mod.resolve_window(settings, model, (provider or {}).get("id", ""))
+    _, cap = settings_mod.resolve_output_cap(settings, model, window)
+    safety = max(1024, round(window.tokens * 0.1))
+    return window.tokens, cap, max(0, window.tokens - cap - safety)
+
+
+def run_housekeeping(data_dir, life_id: str, session_id: str, settings: dict,
+                     transport) -> dict:
+    """真正的整理动作：该压就压，压过就顺手把新记住的事提出来。
+
+    返回做了什么（给测试和日志看）。**没到水位就什么都不做**，一次模型调用都不发。
+    """
+    life = Life.load(data_dir / "humans" / life_id)
+    if not (life.root / "identity.json").exists():
+        return {"skipped": "没有这位生命"}
+    provider = settings_mod.provider(settings, life.identity.get("providerId"))
+    if provider is None:
+        return {"skipped": "他绑的平台不在了"}  # 不抛错：这是后台，别吵
+
+    model = life.identity.get("model") or ""
+    window, cap, budget = housekeeping_budget(settings, life)
+    from .adapters import make_caller
+
+    caller = make_caller(provider, model=model, transport=transport, max_tokens=min(cap, 8192))
+    meta = memory.compress(life, session_id, caller=caller, model=model, budget=budget)
+    if not meta:
+        # 没到水位（或者原文还太少）：**不提取**。提取一次要一次调用，
+        # 而没压过的原文下一轮还会在，没必要现在花这笔钱。
+        return {"compaction": None}
+
+    res = memory.extract(life, session_id, caller=caller, model=model)
+    return {"compaction": meta, "extracted": [m.name for m in res.written],
+            "skipped": res.skipped_duplicate, "rejected": res.rejected}
 
 
 def _run_parallel(data_dir, session, seats, lives, question, rnd, settings, transport):

@@ -36,6 +36,11 @@ DEFAULT_CONTEXT_WINDOW: int = _DATA["defaultContextWindow"]
 
 DISTILL_SYSTEM: str = _DATA["distillSystem"]
 
+# 上面这两条（`DISTILL_SYSTEM` 和下面那个 `distill_user_prompt`）是"提炼工作台"用的：
+# 把一本书/一段材料炼成一份人格。**目前没有接口和界面用它**——你说这个功能先不做。
+# 留着是因为它是**从老项目逐字搬过来的数据**，`dev/check_presets.py` 会盯着它别走样；
+# 以后想做时不用重新搬一遍、也不用重新核。
+
 # ── 数据版本 ──
 #
 # 老项目最后停在 7（v7 把超出范围的高级设置纠正回范围内）。

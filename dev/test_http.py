@@ -40,8 +40,9 @@ import httpx  # noqa: E402
 import uvicorn  # noqa: E402
 
 from dev import mock_upstream as mock  # noqa: E402
-from server import main as appmod  # noqa: E402
+from server import chat, main as appmod  # noqa: E402
 from server import sessions, settings as settings_mod, templates  # noqa: E402
+from server.adapters import core  # noqa: E402
 from server.life import Life  # noqa: E402
 
 passed = failed = 0
@@ -56,6 +57,22 @@ def check(cond, msg):
     else:
         failed += 1
         print(f"  ❌ {msg}")
+
+
+class SlowTransport:
+    """一个很慢的假传输：用来量"派活给后台是不是立刻返回"。"""
+
+    def __init__(self, delay: float = 1.5):
+        self.delay = delay
+        self.calls = 0
+
+    def open_stream(self, *, url, headers, body, timeout):
+        self.calls += 1
+        time.sleep(self.delay)
+        return core.Opened(status=200, chunks=iter([b"data: [DONE]\n\n"]))
+
+    def get_json(self, *, url, headers, timeout):
+        return 200, "{}"
 
 
 def free_port() -> int:
@@ -428,8 +445,8 @@ def main() -> int:
             check(c.delete(f"{base}/api/lives/{life_a.id}/memory/{got['id']}").json()["ok"], "删记忆能删")
             check(len(c.get(f"{base}/api/lives/{life_a.id}/memory").json()["memories"]) == 0, "删完就空了")
 
-        # ── 11. 整理（压缩 + 提取记忆，走真模型）──
-        print("\n── 手动整理一次（真的调模型）──")
+        # ── 11. 后台整理：聊着聊着就自己长出记忆了 ──
+        print("\n── 自动整理（两轮之间后台跑，用户无感）──")
         mock.reset()
         mock.set_script(
             "mock-chat",
@@ -448,27 +465,64 @@ def main() -> int:
             for i in range(8):
                 c.post(f"{base}/api/ask", json={"sessionId": sid, "seatNo": 1,
                                                 "question": f"第 {i} 个问题：" + "背景" * 400})
-        with httpx.Client(timeout=90, headers=H) as c:
-            r = c.post(f"{base}/api/lives/{life_a.id}/sessions/{sid}/compact", json={})
-            got = r.json()
-        check(r.status_code == 200, f"整理接口返回 200（{r.status_code}）")
-        check(got["compaction"] is not None, f"压出了摘要（{got['compaction']}）")
-        check(life_a.summary_text(sid) != "", "摘要写进了水位线索引")
+
+        # 后台是异步的：等它落地（最多 30 秒）
+        settled = False
+        for _ in range(60):
+            if life_a.summary_text(sid) and life_a.memories():
+                settled = True
+                break
+            time.sleep(0.5)
+        check(settled, "**没按任何按钮**，他自己压出了摘要、也记住了事")
+        check(life_a.summary_text(sid) != "", f"摘要：{life_a.summary_text(sid)[:30]}")
+        check(len(life_a.memories()) >= 2, f"记住了 {len(life_a.memories())} 条长期记忆")
+        check("考虑辞职" in life_a.index_text(), "进了他的记忆目录（下次对话就能被召回）")
         check(len(life_a.read_session(sid)) > len(life_a.read_session(sid, only_tail=True)),
-              "原文还在（只追加），但请求路径只读尾巴了")
-        written = got["extracted"]["written"]
-        check(len(written) == 2, f"提取出 2 条长期记忆（实际 {len(written)}）")
-        check({m["name"] for m in written} == {"考虑辞职", "不想听空话"},
-              f"名字对得上：{[m['name'] for m in written]}")
-        check(all(m["source"] == sid for m in written), "每条都记着来源会话")
-        check("考虑辞职" in life_a.index_text(), "进了他的记忆目录")
-        # 再整理一次：同一段对话不该重复提取（去重要收敛）
+              "原文一条没少（只追加），但请求路径从此只读尾巴")
+        sent = [r for r in mock.requests_for("mock-chat")
+                if "数字生命" in json.dumps(r["body"].get("messages") or [], ensure_ascii=False)]
+        check(bool(sent), "后台那次调用确实发了（用压缩/提取的提示词，不是人格）")
+        check(life_a.compaction(sid).get("usage", {}).get("promptTokens", 0) > 0,
+              "整理花的 token 记进账了（越老越贵，要看得见）")
+
+        # 刚整理过就别再花一次钱
         with httpx.Client(timeout=90, headers=H) as c:
             again = c.post(f"{base}/api/lives/{life_a.id}/sessions/{sid}/compact", json={}).json()
-        check(len(again["extracted"]["written"]) == 0
-              and len(again["extracted"]["skipped"]) == 2,
-              f"再整理一次：0 条新增、2 条认出已记过（{again['lines']}）")
-        check(len(life_a.memories()) == 2, f"记忆条数仍然是 2，没有越提越多（{len(life_a.memories())}）")
+        check(again["compaction"] is None, "刚整理过再按「现在整理一次」→ 什么都不做（不白花一次调用）")
+        check(len(life_a.memories()) == 2, f"记忆条数没有翻倍（{len(life_a.memories())}）")
+
+        print("\n── 「不阻塞」要能量出来 ──")
+        slow = SlowTransport(delay=1.5)
+        t0 = time.time()
+        chat.schedule_housekeeping(data_dir, {1: life_a}, sid, settings_mod.load(data_dir), slow)
+        took = time.time() - t0
+        check(took < 0.3, f"派活给后台是**立刻返回**的（{took * 1000:.0f}ms，模型那边要 1.5 秒）")
+        time.sleep(2.0)  # 让它跑完，别影响后面的断言
+
+        print("\n── 裸模型不积累记忆 ──")
+        bare_tpl = next((t for t in templates.load_all(data_dir) if t.bare), None)
+        bare_life = Life.create(data_dir / "humans", template_id=bare_tpl.id, provider_id="pv_mock",
+                                model="mock-chat", name="裸的")
+        mock.set_script("mock-chat", text="裸模型的一句话回答。")
+        with httpx.Client(timeout=60, headers=H) as c:
+            made = c.post(f"{base}/api/sessions",
+                          json={"title": "裸的桌子", "mode": "parallel",
+                                "seats": [{"seatNo": 1, "lifeId": bare_life.id,
+                                           "providerId": "pv_mock", "model": "mock-chat"}]}).json()
+            bare_sid = made["id"]  # **用它给的那个 id**，别自己编一个
+            for i in range(4):
+                c.post(f"{base}/api/ask", json={"sessionId": bare_sid,
+                                                "question": f"问题 {i}：" + "字" * 300})
+        time.sleep(1.5)  # 给后台一点时间（如果有的话）
+        check(bare_life.summary_text(bare_sid) == "" and not bare_life.memories(),
+              "裸模型不压缩也不记长期记忆——它是对打的探针，不是陪伴（设计文档里的承诺）")
+        check(len(bare_life.read_session(bare_sid)) >= 8,
+              f"但对话记录照旧留着（原文是真相，实际 {len(bare_life.read_session(bare_sid))} 条）")
+        # 收拾干净，别影响后面数数
+        with httpx.Client(timeout=20, headers=H) as c:
+            c.delete(f"{base}/api/sessions/{bare_sid}")
+            c.delete(f"{base}/api/lives/{bare_life.id}")
+        check(not (bare_life.root / "identity.json").exists(), "裸的那位删掉了（连同他的记录）")
 
         # ── 12. 一生（时间线）──
         print("\n── 一生 ──")
