@@ -30,7 +30,7 @@ from . import store
 # 对话记录里一行可以是这几种
 KIND_YOU = "you"  # 用户说的
 KIND_SELF = "self"  # 他自己说的
-KIND_HEARD = "heard"  # 会议里他听到别人说的
+KIND_HEARD = "heard"  # 他听到别人说的（老记录里才有：0.8.0 的会议模式、以及从老项目搬来的）
 KIND_SUMMARY = "summary"  # 这一段会话被压成的摘要
 
 # 长期记忆的类型（借 learn-claude-code 的四分类）

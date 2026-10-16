@@ -7,7 +7,7 @@
  *    注入在 index.html 里。所以前端产物可以随便拷，但没有令牌就调不通接口。
  *
  * 2. **流式是一次一行读的，不是等全部算完。** `fetch` + `ReadableStream` 手动切行，
- *    因为圆桌的整个观感就是"七个席位同时出字"——等整轮结束再渲染就没有那个感觉了。
+ *    因为这件事的观感就是"几位同时出字"——等整轮结束再渲染就没有那个感觉了。
  *    这里必须处理**跨块切断**：一行可能分两次到（`buffer` 就是为这个留的）。
  */
 
@@ -80,13 +80,12 @@ export interface Seat {
 export interface Session {
   id: string
   title: string
-  mode: 'parallel' | 'council'
   seats: Seat[]
   createdAt: number
   updatedAt: number
 }
 
-/** 流里推过来的事件。每块都带 seatNo——并排模式下多个席位是交错来的。 */
+/** 流里推过来的事件。每块都带 seatNo——几位同时答，字是交错来的。 */
 export interface StreamEvent {
   type:
     | 'seat_start' | 'text' | 'reasoning' | 'notice' | 'limit'

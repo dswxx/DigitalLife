@@ -41,7 +41,7 @@ import uvicorn  # noqa: E402
 
 from dev import mock_upstream as mock  # noqa: E402
 from server import chat, main as appmod  # noqa: E402
-from server import sessions, settings as settings_mod, templates  # noqa: E402
+from server import sessions, settings as settings_mod, store, templates  # noqa: E402
 from server.adapters import core  # noqa: E402
 from server.life import Life  # noqa: E402
 
@@ -180,7 +180,7 @@ def main() -> int:
             check(r.status_code == 200, "带对令牌 → 通")
             body = r.json()
             check(body["apiVersion"] == appmod.API_VERSION, f"报了接口版本 {body['apiVersion']}")
-            check(body["dataVersion"] == 8, "报了数据版本 8")
+            check(body["dataVersion"] == 9, "报了数据版本 9")
             r = c.get(f"{base}/api/nothing-here", headers=H)
             check(r.status_code == 404 and "接口" in r.json().get("error", ""),
                   f"不存在的接口是 404 JSON，不是 HTML（实际 {r.status_code}）")
@@ -245,12 +245,27 @@ def main() -> int:
 
         # ── 4. 建桌子 + 第一轮对话（真流式）──
         print("\n── 第一轮：真流式对话 ──")
+        # 老会话文件（0.8.0 之前）里还留着 `mode` 字段：读的时候忽略它，
+        # 保存一次之后就自然没了——**这就是 v9 不需要迁移函数的理由**，钉住它。
+        legacy = data_dir / "sessions" / "th_legacy.json"
+        store.write_json(legacy, {
+            "id": "th_legacy", "title": "老的", "mode": "council",
+            "seats": [], "createdAt": 1, "updatedAt": 1,
+        })
+        with httpx.Client(timeout=20, headers=H) as c:
+            got = c.get(f"{base}/api/sessions").json()
+            check(any(s["id"] == "th_legacy" for s in got), "带 mode 的老会话文件读得出来（不报错）")
+            c.patch(f"{base}/api/sessions/th_legacy", json={"title": "老的（改过）"})
+        after = json.loads(legacy.read_text(encoding="utf-8"))
+        check("mode" not in after, f"保存一次之后 `mode` 就没了（{sorted(after)}）")
+        legacy.unlink()
+
         mock.set_script("mock-chat", text="行动 > 空想。第一，先算成本；第二，别自我感动。")
         with httpx.Client(timeout=60, headers=H) as c:
             seats = [{"seatNo": 1, "lifeId": life_a.id, "providerId": "pv_mock", "model": "mock-chat"},
                      {"seatNo": 2, "lifeId": life_b.id, "providerId": "pv_mock", "model": "mock-chat"}]
             sid = c.post(f"{base}/api/sessions",
-                         json={"title": "第一次测试", "mode": "parallel", "seats": seats}).json()["id"]
+                         json={"title": "第一次测试", "seats": seats}).json()["id"]
             t0 = time.time()
             first_chunk_at = None
             events = []
@@ -328,26 +343,26 @@ def main() -> int:
         check(roles[0] == "system", "人格仍然作为 system 放在最前面")
         check(all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), f"user/assistant 严格交替（{roles}）")
 
-        # ── 7. 会议模式：后面的人听得到前面的人 ──
-        print("\n── 会议模式：他听得到前面的人 ──")
+        # ── 7. 一问多答：各自独立，听不到别人这一轮说了什么 ──
+        # （0.8.0 把"会议"取消了：没有顺序发言，也没有"听到前面那位"这回事）
+        print("\n── 一问多答：各自独立 ──")
         mock.reset()
-        mock.set_script("mock-chat", text="（听完前面那位）我补一句。")
+        mock.set_script("mock-chat", text="我答我的。")
         with httpx.Client(timeout=60, headers=H) as c:
             sid2 = c.post(f"{base}/api/sessions",
-                          json={"title": "会议", "mode": "council", "seats": seats}).json()["id"]
+                          json={"title": "另外问一次", "seats": seats}).json()["id"]
             c.post(f"{base}/api/ask", json={"sessionId": sid2, "question": "怎么看这件事？"})
         calls = mock.requests_for("mock-chat")
-        check(len(calls) == 2, f"会议模式是顺序问的，两次调用（{len(calls)}）")
-        second = [m["content"] for m in calls[1]["body"]["messages"]]
-        check(any("本轮此前已发言的人" in x for x in second),
-              "第二个席位的请求里有「本轮此前已发言的人」")
-        check(any("听完前面那位" in x for x in second), "而且内容就是前面那位的原话")
-        first_req = [m["content"] for m in calls[0]["body"]["messages"]]
-        check(not any("本轮此前已发言的人" in x for x in first_req), "第一个席位没有这一段（他前面没人）")
-        b_entries = life_b.read_session(sid2)
-        check("heard" in [e["kind"] for e in b_entries], f"乙的记录里有「听到的」（{[e['kind'] for e in b_entries]}）")
-        a_entries = life_a.read_session(sid2)
-        check("heard" not in [e["kind"] for e in a_entries], "甲的记录里没有（他先说）")
+        check(len(calls) == 2, f"两位都问了（{len(calls)} 次调用）")
+        for i, call in enumerate(calls):
+            texts = [m["content"] for m in call["body"]["messages"]]
+            check(not any("本轮此前已发言的人" in x for x in texts),
+                  f"第 {i + 1} 位的请求里没有别人的话（各自独立）")
+            check(not any("我答我的" in x for x in texts),
+                  f"第 {i + 1} 位也没听到同轮别人的回答")
+        kinds = [e["kind"] for e in life_b.read_session(sid2)]
+        check("heard" not in kinds, f"记录里不再产生「听到的」（{kinds}）")
+        check(sorted(set(kinds)) == ["self", "you"], f"只有「你说的」和「他说的」两种（{kinds}）")
 
         # ── 8. 能自愈的报错：温度被摘、max_tokens 按平台说的改 ──
         print("\n── 上游不接受我们发的参数 ──")
@@ -506,7 +521,7 @@ def main() -> int:
         mock.set_script("mock-chat", text="裸模型的一句话回答。")
         with httpx.Client(timeout=60, headers=H) as c:
             made = c.post(f"{base}/api/sessions",
-                          json={"title": "裸的桌子", "mode": "parallel",
+                          json={"title": "只有裸模型",
                                 "seats": [{"seatNo": 1, "lifeId": bare_life.id,
                                            "providerId": "pv_mock", "model": "mock-chat"}]}).json()
             bare_sid = made["id"]  # **用它给的那个 id**，别自己编一个

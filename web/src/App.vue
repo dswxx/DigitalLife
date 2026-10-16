@@ -3,8 +3,8 @@
  * 外壳。**结构就是老界面那个**：
  *
  *   .app
- *   ├── aside.sidebar   左侧栏（品牌 / 新建圆桌 / 会话列表 / 三个导航 / 配色）
- *   └── main.stage      主区（圆桌 / 数字人库 / 模型与密钥）
+ *   ├── aside.sidebar   左侧栏（品牌 / 新建对话 / 对话列表 / 三个导航 / 配色）
+ *   └── main.stage      主区（一问多答 / 数字人库 / 模型与密钥）
  *
  * 区别只在主区里放什么：老界面三块，这一版还是那三块，
  * 只是"数字人"多了一层概念（蓝图 → 个体），所以库那一页多一个方块。
@@ -21,13 +21,13 @@ import SpeakerModal from './views/SpeakerModal.vue'
 
 const app = useApp()
 
-/** 能写进地址栏的抽屉（打开它 = 换个地址）。席位弹窗不进来：
- *  它属于"正在改桌子"，刷新之后还停在那儿反而碍事。 */
+/** 能写进地址栏的抽屉（打开它 = 换个地址）。加人/换人那个弹窗不进来：
+ *  它属于"正在改这次问谁"，刷新之后还停在那儿反而碍事。 */
 const DEEP = ['memory', 'timeline']
 
 /** 地址栏是**唯一的导航真相**：`#/round` / `#/humans` / `#/settings`，
  *  抽屉再挂一段 `#/humans/memory/<谁>`。
- *  不做的话，在圆桌上按一下刷新就回首页了。 */
+ *  不做的话，在一问多答那一页按一下刷新就回首页了。 */
 function parseHash() {
   const parts = location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean)
   const first = parts[0]

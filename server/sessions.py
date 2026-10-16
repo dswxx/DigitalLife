@@ -1,20 +1,19 @@
-"""桌子：**谁和谁坐在一起说话**。
+"""一次对话：**问过哪些人**。
 
 新数据布局里原本没有这个东西——每一位生命只记"我亲历了什么"
-（`humans/<生命>/sessions/<会话>.jsonl`）。但"桌子上有谁、按什么规矩轮"是
-**桌子自己的属性**，不能塞进任何一位生命的记忆里（那会变成"我以为别人也在"）。
+（`humans/<生命>/sessions/<会话>.jsonl`）。但"这次问了谁"是**这次对话自己的属性**，
+不能塞进任何一位生命的记忆里（那会变成"我以为别人也在"）。
 
 所以：
 
-    data/sessions/<会话>.json          桌子：有谁、什么规矩、什么时候开的
-    data/humans/<生命>/sessions/<会话>.jsonl   那一位亲历的记录（各记各的）
+    data/sessions/<对话>.json          这次对话：问了谁、什么时候开的
+    data/humans/<生命>/sessions/<对话>.jsonl   那一位亲历的记录（各记各的）
 
-两边用同一个会话 id 对上。**记忆属于个体，桌子只记录"当时有谁"。**
-老数据里的 `threads/*.json` 是桌子的老形状，迁移时按这个结构重建一份。
+两边用同一个对话 id 对上。**记忆属于个体，对话只记录"当时问了谁"。**
 
-两种规矩（继承老项目，产品特性不能丢）：
-  · parallel 并排：所有人同时听到同一句问题，**互相听不到这一轮的回答**
-  · council  会议：按座位顺序一个一个说，**后面的人听得到前面的人**
+（0.8.0 之前这里叫"桌子"，还有第二种规矩 `council`——按顺序说、后面的人听得到前面。
+圆桌那套取消了，所以只剩一种行为：一次提问、选中的几位并排作答、各自独立。
+老文件里的 `mode` 字段不再读也不再写。）
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from pathlib import Path
 from . import store
 from .life import new_id, now_ms
 
-MODES = ("parallel", "council")
+DEFAULT_TITLE = "新的对话"
 
 _ID_SAFE = re.compile(r"[^0-9A-Za-z_\u4e00-\u9fff-]+")
 
@@ -44,8 +43,7 @@ def session_path(data_dir, session_id: str):
 @dataclass
 class Session:
     id: str
-    title: str = "新的圆桌"
-    mode: str = "parallel"
+    title: str = DEFAULT_TITLE
     seats: list[dict] = field(default_factory=list)
     created_at: int = 0
     updated_at: int = 0
@@ -54,7 +52,6 @@ class Session:
         return {
             "id": self.id,
             "title": self.title,
-            "mode": self.mode,
             "seats": list(self.seats),
             "createdAt": self.created_at or now_ms(),
             "updatedAt": self.updated_at or now_ms(),
@@ -62,7 +59,6 @@ class Session:
 
     @staticmethod
     def from_json(d: dict) -> "Session":
-        mode = d.get("mode") if d.get("mode") in MODES else "parallel"
         seats = []
         for i, s in enumerate(d.get("seats") or []):
             if not s.get("lifeId"):
@@ -76,8 +72,7 @@ class Session:
             })
         return Session(
             id=d.get("id") or new_id("th"),
-            title=str(d.get("title") or "新的圆桌"),
-            mode=mode,
+            title=str(d.get("title") or DEFAULT_TITLE),
             seats=seats,
             created_at=int(d.get("createdAt") or 0),
             updated_at=int(d.get("updatedAt") or 0),
@@ -87,16 +82,15 @@ class Session:
         return next((s for s in self.seats if s["seatNo"] == seat_no), None)
 
     def ordered(self) -> list[dict]:
-        """按座位号排序。**会议模式的顺序就是它**——谁先说谁后说。"""
+        """按序号排序——**只为顺序稳定**（谁在第几位），不再代表谁先说。"""
         return sorted(self.seats, key=lambda s: s["seatNo"])
 
 
-def create(data_dir, *, title: str = "新的圆桌", mode: str = "parallel",
+def create(data_dir, *, title: str = DEFAULT_TITLE,
            seats: list[dict] | None = None, session_id: str | None = None) -> Session:
     s = Session(
         id=session_id or new_id("th"),
-        title=title or "新的圆桌",
-        mode=mode if mode in MODES else "parallel",
+        title=title or DEFAULT_TITLE,
         seats=normalize_seats(seats or []),
         created_at=now_ms(),
         updated_at=now_ms(),
@@ -147,7 +141,7 @@ def summary(data_dir, session: Session) -> dict:
     """给左侧栏那张小卡用的摘要：`N 轮 · M 位 · 什么时候动过`。
 
     轮数从**记录里数**（每位生命每轮各记一条 `you`，所以数一位的就够了）——
-    桌子本身只记"有谁"，不记轮数，那份原文在生命自己的记录里。
+    对话本身只记"问了谁"，不记轮数，那份原文在生命自己的记录里。
     """
     rounds = 0
     if session.seats:
@@ -169,7 +163,7 @@ def delete(data_dir, session_id: str) -> bool:
 
 
 def touch(data_dir, session_id: str) -> None:
-    """有人说过话了：把桌子往前排。"""
+    """有人说过话了：把这次对话往前排。"""
     s = load(data_dir, session_id)
     if s:
         save(data_dir, s)

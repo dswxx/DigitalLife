@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * 左侧栏。**结构和老界面一模一样**（品牌 / 新建圆桌 / 会话列表 / 三个导航 / 配色），
+ * 左侧栏。**结构和老界面一模一样**（品牌 / 新建对话 / 对话列表 / 三个导航 / 配色），
  * 只是把"数字人"这层的名字换成了新产品的说法：
  *
  *   老：圆桌 · 数字人库 · 模型与密钥
- *   新：圆桌 · 数字人库 · 模型与密钥   ← 保留（用户认的就是这三个词）
+ *   新：一问多答 · 数字人库 · 模型与密钥   ← 第一项改名：圆桌那套取消了
  */
 import { computed, ref } from 'vue'
 import { api } from '../api'
@@ -48,8 +48,8 @@ function ago(ms: number): string {
   return `${d.getMonth() + 1}月${d.getDate()}日`
 }
 
-async function newTable() {
-  const created = await api.createSession({ title: '新的圆桌', mode: 'parallel', seats: [] })
+async function newTalk() {
+  const created = await api.createSession({ title: '新的对话', seats: [] })
   app.sessions = [created as any, ...app.sessions]
   app.currentSessionId = created.id
   app.syncSeatsFromSession()
@@ -57,7 +57,7 @@ async function newTable() {
   app.go('round')
 }
 
-async function openTable(id: string) {
+async function openTalk(id: string) {
   app.currentSessionId = id
   app.syncSeatsFromSession()
   app.clearRound()
@@ -65,7 +65,7 @@ async function openTable(id: string) {
   void app.loadRounds()
 }
 
-async function delTable(id: string) {
+async function delTalk(id: string) {
   await api.deleteSession(id)
   confirmDel.value = ''
   await app.refreshSessions()
@@ -88,7 +88,7 @@ async function delTable(id: string) {
     </div>
 
     <div class="side-section">
-      <button class="btn primary block" @click="newTable">＋ 新建圆桌</button>
+      <button class="btn primary block" @click="newTalk">＋ 新建对话</button>
     </div>
 
     <div class="thread-list">
@@ -97,9 +97,9 @@ async function delTable(id: string) {
         :key="s.id"
         class="thread-item"
         :class="{ active: s.id === app.currentSessionId }"
-        @click="openTable(s.id)"
+        @click="openTalk(s.id)"
       >
-        <div class="ti-title">{{ s.title || '新的圆桌' }}</div>
+        <div class="ti-title">{{ s.title || '新的对话' }}</div>
         <div class="ti-sub">
           {{ (s as any).rounds ?? 0 }} 轮 · {{ (s as any).seatCount ?? s.seats.length }} 位 ·
           {{ ago(s.updatedAt) }}
@@ -107,7 +107,7 @@ async function delTable(id: string) {
         <button
           v-if="confirmDel !== s.id"
           class="ti-del"
-          title="删除这张圆桌"
+          title="删掉这次对话"
           @click.stop="confirmDel = s.id"
         >
           ✕
@@ -117,19 +117,19 @@ async function delTable(id: string) {
           class="ti-del"
           title="再点一次真的删掉"
           style="color: var(--err)"
-          @click.stop="delTable(s.id)"
+          @click.stop="delTalk(s.id)"
         >
           ✓
         </button>
       </div>
       <div v-if="!app.sessions.length" class="hint" style="padding: 10px 4px">
-        还没有桌子。点上面「＋ 新建圆桌」。
+        还没有对话。点上面「＋ 新建对话」。
       </div>
     </div>
 
     <div class="side-nav">
       <button class="nav-btn" :class="{ active: app.view === 'round' }" @click="app.go('round')">
-        <span class="nav-icon">🗣️</span>圆桌
+        <span class="nav-icon">🗣️</span>一问多答
       </button>
       <button class="nav-btn" :class="{ active: app.view === 'humans' }" @click="app.go('humans')">
         <span class="nav-icon">🎭</span>数字人库

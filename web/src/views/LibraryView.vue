@@ -106,7 +106,7 @@ async function removeTemplate(id: string) {
 
       <div class="row wrap" style="margin-bottom: 18px">
         <button class="btn primary" @click="wizard = true">＋ 新建数字人</button>
-        <button class="btn" @click="app.go('round')">去圆桌</button>
+        <button class="btn" @click="app.go('round')">去一问多答</button>
       </div>
 
       <div v-if="problem" class="answer-note err">✕ {{ problem }}</div>

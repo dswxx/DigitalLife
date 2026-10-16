@@ -5,16 +5,15 @@
 
   1. **请求路径永远不调用模型做压缩。** 只做确定性裁剪（`context.build_context`）。
      压缩在后台、在上一轮结束之后（`memory.compress`）。
-  2. **失败要可见。** 一个席位挂了不能让其他席位消失，也不能让整轮没有输出；
+  2. **失败要可见。** 一位挂了不能让其他人消失，也不能让整轮没有输出；
      每块都带 `seatNo`，前端照着往卡片上贴。
   3. **不静默改用户的设置。** 温度被摘、输出上限被改，都通过 notice 说出来。
 
-两种规矩（继承老项目）：
-  · parallel 并排：所有人同时听到同一句问题，互相听不到这一轮的回答 → **并发跑**
-  · council  会议：按座位顺序一个一个说，后面的人听得到前面的 → **顺序跑**，
-    而且前面说过的话要作为「本轮此前已发言的人」进他的这次请求
+两种规矩……**只剩一种了**：一次提问，被选中的那几位**同时**听到同一句问题、
+**同时**开口、互相听不到这一轮的回答（并发跑）。原来还有"会议"那种按顺序说、
+后面的人听得到前面的——那套连同"圆桌"一起取消了（0.8.0）。
 
-**记录是每个席位一说完就落盘的**，不是等整轮结束再统一写：
+**记录是每一位一说完就落盘的**，不是等整轮结束再统一写：
 用户看到一半关掉页面时，他刚才问的那句和已经答出来的那些必须留下。
 """
 
@@ -84,17 +83,18 @@ def ask(data_dir, *, session_id: str, question: str, settings: dict, transport,
         only_seat: int | None = None):
     """问一句。**这是一个生成器**：边算边把事件吐出去。
 
-    用生成器而不是"先算完再返回"，是因为用户要边看边读——七个席位同时出字才算圆桌。
+    用生成器而不是"先算完再返回"，是因为用户要边看边读——
+    几位同时出字，才看得出"一次提问、多位并排回答"。
     """
     session = sessions.load(data_dir, session_id)
     if session is None:
-        raise AdapterError(404, f"找不到这张桌子：{session_id}")
+        raise AdapterError(404, f"找不到这次对话：{session_id}")
     question = (question or "").strip()
     if not question:
         raise AdapterError(400, "先写点什么再问")
     seats = [s for s in session.ordered() if only_seat is None or s["seatNo"] == only_seat]
     if not seats:
-        raise AdapterError(400, "这张桌子上还没有数字人")
+        raise AdapterError(400, "还没选要问的人")
 
     rnd = Round(id=new_id("r"), at=now_ms(), session_id=session_id)
 
@@ -105,21 +105,9 @@ def ask(data_dir, *, session_id: str, question: str, settings: dict, transport,
             lives[seat["seatNo"]] = life
         else:
             yield {"type": "error", "seatNo": seat["seatNo"],
-                   "message": f"座位上那位（{seat['lifeId']}）已经不在了"}
+                   "message": f"选中的那位（{seat['lifeId']}）已经不在了"}
 
-    if session.mode == "council":
-        spoken: list[dict] = []
-        for seat in seats:  # 顺序：一个一个说，后面的听得到前面的
-            life = lives.get(seat["seatNo"])
-            if life is None:
-                continue
-            yield from _run_seat(data_dir, session, seat, life, question, rnd, settings,
-                                 transport, list(spoken))
-            got = rnd.answer_of(seat["seatNo"])
-            if got and got.get("content"):
-                spoken.append({"who": got.get("name") or "某位", "text": got["content"]})
-    else:
-        yield from _run_parallel(data_dir, session, seats, lives, question, rnd, settings, transport)
+    yield from _run_parallel(data_dir, session, seats, lives, question, rnd, settings, transport)
 
     sessions.touch(data_dir, session_id)
     # 答完了 → **在后台**看看该不该整理（压缩 + 提记忆）。
@@ -144,7 +132,7 @@ def ask(data_dir, *, session_id: str, question: str, settings: dict, transport,
 def schedule_housekeeping(data_dir, lives: dict, session_id: str, settings: dict, transport) -> None:
     """一轮答完之后，把这几位生命的"整理"丢到后台去。
 
-    一位生命一个任务、串行跑：并排模式下有七个席位，要是并行发七次模型调用，
+    一位生命一个任务、串行跑：一次可能问七位，要是并行发七次模型调用，
     每轮结束都会有一次小高峰。串行慢一点，但花的是同一笔钱，而且安静。
 
     **裸模型不整理**：设计文档说了它是对打的探针，不是陪伴，不积累记忆。
@@ -216,10 +204,10 @@ def run_housekeeping(data_dir, life_id: str, session_id: str, settings: dict,
 
 
 def _run_parallel(data_dir, session, seats, lives, question, rnd, settings, transport):
-    """并排：所有人同时听到同一句问题。**真的并发跑**，靠队列把字交错吐出来。
+    """一次提问：选中的几位**同时**听到同一句问题，互相听不到这一轮的回答。
 
-    并发是有必要的：七个席位串行跑，用户要等七倍时间；而且"同时回答"本来就是
-    这个产品的观感。代价是要处理交错——所以每块都带 seatNo。
+    真的并发跑，靠队列把字交错吐出来。并发是有必要的：几位串行跑，用户要等几倍时间；
+    而且"同时开口"本来就是这件事的观感。代价是要处理交错——所以每块都带 seatNo。
     """
     q: "queue.Queue[dict]" = queue.Queue()
     threads: list[threading.Thread] = []
@@ -231,9 +219,9 @@ def _run_parallel(data_dir, session, seats, lives, question, rnd, settings, tran
         def work(seat=seat, life=life):
             try:
                 for evt in _run_seat(data_dir, session, seat, life, question, rnd, settings,
-                                     transport, []):
+                                     transport):
                     q.put(evt)
-            except Exception as e:  # noqa: BLE001 —— 一个席位炸了不能拖垮整轮
+            except Exception as e:  # noqa: BLE001 —— 一位炸了不能拖垮整轮
                 q.put({"type": "error", "seatNo": seat["seatNo"], "message": f"{type(e).__name__}：{e}"})
             finally:
                 q.put({"type": "_seat_end"})
@@ -252,8 +240,8 @@ def _run_parallel(data_dir, session, seats, lives, question, rnd, settings, tran
 
 
 def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dict,
-              transport, heard: list[dict]):
-    """一个席位的一整次回答。产出事件，**结束时把这一轮记进他的记录**。"""
+              transport):
+    """一位的一整次回答。产出事件，**结束时把这一轮记进他的记录**。"""
     seat_no = seat["seatNo"]
     name = life.identity.get("name") or seat["lifeId"]
     yield {"type": "seat_start", "seatNo": seat_no, "lifeId": life.id, "name": name}
@@ -274,7 +262,6 @@ def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dic
         question=question,
         window=window.tokens,
         output_reserve=cap,
-        heard=heard or None,
         persona=tpl.system,
         bare=tpl.bare,
     )
@@ -388,7 +375,7 @@ def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dic
     }
     rnd.answers.append(answer)
     # **一说完就落盘**：用户中途关页面，已经答出来的这些也必须留下
-    _record_round(life, session, seat, question, rnd.at, answer, heard or [])
+    _record_round(life, session, seat, question, rnd.at, answer)
     yield {"type": "seat_done", "seatNo": seat_no, **answer}
 
 
@@ -401,15 +388,17 @@ def _template_for(data_dir, life) -> templates.Template:
 
 
 def _record_round(life: Life, session, seat: dict, question: str, at: int,
-                  answer: dict, heard: list[dict]) -> None:
-    """把这一轮记进他的记录：**你说了什么、他听到了什么、他说了什么**。
+                  answer: dict) -> None:
+    """把这一轮记进他的记录：**你说了什么、他说了什么**。
 
     时间是**原始时间戳**：提问用本轮开始的时间，他的回答用开始 + 他花了多久。
     这样"记忆的年龄"才是真的。
+
+    并排作答里他听不到别人（各自独立），所以这里没有 `heard` 这一档。
+    老记录里可能还有（0.8.0 之前"会议"模式留下的，以及从老项目搬来的），
+    读的时候照旧认；这一版不再产生新的。
     """
     entries = [{"t": at, "kind": "you", "text": question}]
-    for h in heard:
-        entries.append({"t": at, "kind": "heard", "who": h.get("who") or "某位", "text": h.get("text", "")})
     if answer.get("content"):
         entries.append({
             "t": at + int(answer.get("ms") or 0),

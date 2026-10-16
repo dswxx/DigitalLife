@@ -1,17 +1,17 @@
 /**
  * 全局状态（Pinia）。
  *
- * 只放**跨页面要共享**的东西：启动数据、当前桌子、桌上的几轮对话、正在流式的那一轮。
+ * 只放**跨页面要共享**的东西：启动数据、当前这次对话、几轮问答、正在流式的那一轮。
  * 单个页面自己的状态就留在那个组件里——不然这里会变成一个什么都塞的大口袋。
  *
- * 和上一版的区别：席位是**配置**（谁坐在桌上），回答是**轮次**（一轮一轮往下堆）。
+ * 和上一版的区别：名单是**配置**（这次问哪几位），回答是**轮次**（一轮一轮往下堆）。
  * 老界面就是这么分的，也更好用：往上翻能看到之前问过什么、谁怎么答的。
  */
 
 import { defineStore } from 'pinia'
 import { api, ask, type Advanced, type LifeSummary, type Provider, type Seat, type Session, type StreamEvent, type Template } from './api'
 
-/** 一位席位（桌上有谁）。 */
+/** 这次要问的一位。 */
 export interface SeatConfig {
   seatNo: number
   lifeId: string
@@ -21,7 +21,7 @@ export interface SeatConfig {
   providerLabel: string
 }
 
-/** 一位席位在某一轮里的回答。 */
+/** 某一位在这一轮里的回答。 */
 export interface AnswerView {
   seatNo: number
   lifeId: string
@@ -77,7 +77,7 @@ export const useApp = defineStore('app', {
     // 「记忆」「一生」是盖在页面上的弹窗，不是独立页面
     modal: '' as '' | 'memory' | 'timeline' | 'life' | 'speaker',
     modalLifeId: '',
-    /** 席位弹窗编的是第几号座位（0 = 新加一个） */
+    /** 加人弹窗编的是第几位（0 = 新加一位） */
     modalSeat: 0,
   }),
 
@@ -152,7 +152,7 @@ export const useApp = defineStore('app', {
     openModal(kind: 'memory' | 'timeline' | 'life' | 'speaker', lifeId = '') {
       this.modal = kind
       this.modalLifeId = lifeId
-      // 席位弹窗借用同一个参数传"第几号座位"（'0' = 新加一个）
+      // 加人弹窗借用同一个参数传"第几位"（'0' = 新加一位）
       this.modalSeat = kind === 'speaker' ? Number(lifeId) || 0 : 0
     },
     closeModal() {
@@ -167,7 +167,7 @@ export const useApp = defineStore('app', {
       await this.setSeats(next.map((s) => ({ lifeId: s.lifeId, model: s.model })))
     },
 
-    /** 开一张桌子：有就用当前的，没有就建一张。 */
+    /** 开一次对话：有就用当前这次，没有就新建一次。 */
     async ensureSession(): Promise<Session> {
       const found = this.sessions.find((s) => s.id === this.currentSessionId)
       if (found) return found
@@ -176,7 +176,7 @@ export const useApp = defineStore('app', {
         this.syncSeatsFromSession()
         return this.sessions[0]
       }
-      const created = await api.createSession({ title: '新的圆桌', mode: 'parallel', seats: [] })
+      const created = await api.createSession({ title: '新的对话', seats: [] })
       this.sessions = [created, ...this.sessions]
       this.currentSessionId = created.id
       this.syncSeatsFromSession()
@@ -198,7 +198,7 @@ export const useApp = defineStore('app', {
       })
     },
 
-    async setSeats(next: Array<{ lifeId: string; model?: string }>, mode?: 'parallel' | 'council') {
+    async setSeats(next: Array<{ lifeId: string; model?: string }>) {
       const session = await this.ensureSession()
       const seats: Seat[] = next.map((x, i) => {
         const life = this.lifeById(x.lifeId)
@@ -210,15 +210,9 @@ export const useApp = defineStore('app', {
           temperature: null,
         }
       })
-      const updated = await api.updateSession(session.id, { seats, mode: mode ?? session.mode })
+      const updated = await api.updateSession(session.id, { seats })
       this.sessions = this.sessions.map((s) => (s.id === updated.id ? updated : s))
       this.syncSeatsFromSession()
-    },
-
-    async setMode(mode: 'parallel' | 'council') {
-      const session = await this.ensureSession()
-      const updated = await api.updateSession(session.id, { mode })
-      this.sessions = this.sessions.map((s) => (s.id === updated.id ? updated : s))
     },
 
     clearRound() {
@@ -226,10 +220,10 @@ export const useApp = defineStore('app', {
     },
 
     /**
-     * 把这张桌子上最近几轮读回来。
+     * 把这次对话最近几轮读回来。
      *
      * 一轮的"原文"分散在**每位生命各自的记录**里（他记的是自己亲历的），
-     * 所以这里按提问时间把它们拼回一轮一轮的样子——**桌子只记有谁，不记轮次**。
+     * 所以这里按提问时间把它们拼回一轮一轮的样子——**对话只记问了谁，不记轮次**。
      */
     async loadRounds(limit = 3) {
       const session = this.currentSession

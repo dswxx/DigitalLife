@@ -320,7 +320,7 @@ def main() -> int:
         store.write_json(life.root / "identity.json", life.identity)
         lives.append(life)
 
-    sess = sessions.create(data_dir, title="新的圆桌", mode="parallel", seats=[
+    sess = sessions.create(data_dir, title="新的对话", seats=[
         {"seatNo": 1, "lifeId": lives[0].id, "providerId": "pv_mock", "model": "mock-chat"},
         {"seatNo": 2, "lifeId": lives[1].id, "providerId": "pv_mock", "model": "mock-chat"},
     ])
@@ -439,9 +439,9 @@ def main() -> int:
             br.shot(root / "shots" / "3-timeline.png")
 
         # ── 4. 对话：真流式 ──
-        print("\n── 圆桌对话（真流式）──")
+        print("\n── 一问多答（真流式）──")
         br.eval("location.hash = '#/round'; return 1")
-        check(br.wait_for("document.querySelectorAll('.answer').length > 0"), "对话页有席位卡")
+        check(br.wait_for("document.querySelectorAll('.answer').length > 0"), "对话页有回答卡")
         check(br.count(".answer") == 2, f"{br.count('.answer')} 位在桌上")
         check(br.wait_for("document.body.innerText.includes('我该不该辞职')", 10),
               "回到这一页能看到上一轮问的是什么（问句也是对话的一半）")
@@ -450,7 +450,7 @@ def main() -> int:
               "Markdown 渲染了（**停。** 变成了粗体）")
         mock.set_script("mock-chat", text="这是新的一轮回答，边写边给你看。", chunk_delay=0.06)
         br.type(".composer textarea", "那第一步做什么？")
-        br.click_text(".composer button", "发给全桌")
+        br.click_text(".composer button", "发给这几位")
         check(br.wait_for("document.querySelector('.cursor')", 10),
               "出现光标——**边算边出字**（假上游每块之间停 60ms，才看得见这个瞬间）")
         check(br.wait_for("!document.querySelector('.cursor')", 25), "答完了，光标收了")
@@ -466,19 +466,19 @@ def main() -> int:
         check(br.eval("return document.querySelector('.composer textarea').value === ''"),
               "问完清空输入框（不让人以为没发出去）")
 
-        # 加一个席位——这是**用户第一件要做的事**（桌上一开始没人）。
+        # 加一位——这是**用户第一件要做的事**（一开始一个人都没选）。
         # 弹窗里是两步：先点那位数字人，再点「加进来」。只点人什么都不会发生，
-        # 所以这里两步都走，并且断言座位真的多了一个。
+        # 所以这里两步都走，并且断言真的多了一位。
         seats_before = br.count(".seat-chip:not(.add)")
-        br.click_text(".seat-bar button", "添加席位")
-        check(br.wait_for("document.querySelector('.modal')"), "席位弹窗打开了")
+        br.click_text(".seat-bar button", "加一位")
+        check(br.wait_for("document.querySelector('.modal')"), "加人弹窗打开了")
         picked = br.eval(
             "const b=[...document.querySelectorAll('.modal-body button')][0];"
             "if(!b) return ''; const t=b.innerText.trim(); b.click(); return t")
         check(bool(picked), f"在弹窗里挑了一位：{picked}")
         br.click_text(".modal-foot button", "加进来")
         check(br.wait_for(f"document.querySelectorAll('.seat-chip:not(.add)').length === {seats_before + 1}", 10),
-              f"「加进来」之后桌上多了一位（{seats_before} → {seats_before + 1}）")
+              f"「加进来」之后多了一位（{seats_before} → {seats_before + 1}）")
         br.eval("const x=document.querySelectorAll('.seat-chip:not(.add) .seat-del');"
                 "x[x.length-1].click(); return 1")
         check(br.wait_for(f"document.querySelectorAll('.seat-chip:not(.add)').length === {seats_before}", 10),
@@ -498,7 +498,7 @@ def main() -> int:
         check(br.wait_for("document.querySelectorAll('.answer').length === 1", 20),
               f"座位改成 1 个了（实际 {br.count('.answer')}）")
         br.type(".composer textarea", "带温度地问一句")
-        br.click_text(".composer button", "发给全桌")
+        br.click_text(".composer button", "发给这几位")
         # 先确认这一轮真的发生了——不然"没有黄条"这个结论毫无意义
         ran = br.wait_for("document.body.innerText.includes('好的')", 25)
         check(ran, "这一轮真的跑起来了（否则下面的断言是假通过）")
@@ -510,7 +510,7 @@ def main() -> int:
         br.wait_for("!document.querySelector('.cursor')", 25)
         rounds_before = br.count(".round")
         br.type(".composer textarea", "再问一次")
-        br.click_text(".composer button", "发给全桌")
+        br.click_text(".composer button", "发给这几位")
         check(br.wait_for(f"document.querySelectorAll('.round').length > {rounds_before}", 10),
               "第二轮真的发出去了（不然下面的「没有复读」是假通过）")
         br.wait_for("!document.querySelector('.cursor')", 25)
@@ -534,8 +534,8 @@ def main() -> int:
         # ── 7. 新建流程（两步）──
         print("\n── 新建数字人（两步）──")
         br.goto(f"{base}/#/humans", "document.querySelectorAll('.human-card:not(.is-tpl)').length > 0")
-        # 点主区那个「＋ 新建数字人」——左侧栏也有个「＋ 新建圆桌」，
-        # 按字找会先撞上它（而且它是异步建桌子，看着像没反应）。
+        # 点主区那个「＋ 新建数字人」——左侧栏也有个「＋ 新建对话」，
+        # 按字找会先撞上它（而且它是异步建对话，看着像没反应）。
         br.click_text(".page button", "＋ 新建数字人")
         check(br.wait_for("document.querySelector('.steps')"), "创建流程打开了")
         steps = br.text(".steps")

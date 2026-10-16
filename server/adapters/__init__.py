@@ -40,7 +40,7 @@ def stream_chat(provider: dict, *, model: str, system: str | None, messages: lis
     if not provider.get("apiKey"):
         raise AdapterError(400, f"{label} 还没填 API Key")
     if not model:
-        raise AdapterError(400, "这个席位还没选模型")
+        raise AdapterError(400, "这位还没选模型")
     normalize_base(provider.get("baseUrl"))  # 早点报错，别等发出去才发现
 
     adapter = _adapter(provider)

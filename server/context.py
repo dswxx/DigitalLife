@@ -58,7 +58,6 @@ def build_context(
     question: str,
     window: int,
     output_reserve: int = 8192,
-    heard: list[dict] | None = None,
     persona: str | None = None,
     bare: bool = False,
     safety_ratio: float = 0.1,
@@ -67,13 +66,15 @@ def build_context(
 
     window        —— 这个模型的上下文窗口（优先用平台报的，见 resolve_window）
     output_reserve—— 给输出预留的额度（推理模型的思考也算在这里）
-    heard         —— 会议模式下：本轮此前已发言的人说了什么
     persona       —— 人格模板的 system；None 表示这个模板没有写人格
     bare          —— **纯基线**：整个 system 字段都不发，时间感和记忆也不注入
 
     bare 这条是从老项目继承的产品承诺：「裸模型」要能看出"模型本身"的原样回答。
     所以它不是"发个空的 system"，而是**压根不构造**——连时间感和记忆目录都不加。
     代价是这类生命不积累记忆（它是用来对打的探针，不是用来陪伴的）。
+
+    并排作答是**各自独立**的：他听不到同一次提问里别人的回答，
+    所以这里没有"本轮此前已发言的人"那一档。
     """
     if bare:
         return Built(
@@ -139,14 +140,6 @@ def build_context(
     # ── messages：本次会话的近期原文，从最新往前装到装不下 ──
     budget = max(0, window - output_reserve - safety - estimate_tokens(system))
     fixed: list[dict] = []
-    if heard:
-        fixed.append(
-            {
-                "role": "user",
-                "content": "【本轮此前已发言的人】\n"
-                + "\n\n".join(f"《{h['who']}》：{h['text']}" for h in heard),
-            }
-        )
     fixed.append({"role": "user", "content": question})
     spent = sum(estimate_tokens(m["content"]) for m in fixed)
 
@@ -161,7 +154,7 @@ def build_context(
             f"换个大窗口的模型，或者把人格写短一点。"
         )
     elif spent > budget:
-        # 先掐问题（heard 那一段在会议模式下才出现，而且本来就是别人的话）
+        # 先掐问题
         allowed = budget - (spent - estimate_tokens(question))
         clipped, cut = _clip(question, allowed)
         if cut:
@@ -171,12 +164,6 @@ def build_context(
                 f"这一条太长了（{len(question)} 字），他只读到了开头和结尾，"
                 f"中间 {cut} 字没读到——要完整读到得换个大窗口的模型。"
             )
-        if spent > budget and len(fixed) > 1:
-            allowed = budget - estimate_tokens(question)
-            clipped, cut = _clip(fixed[0]["content"], allowed)
-            if cut:
-                fixed[0] = {"role": "user", "content": clipped}
-                spent = sum(estimate_tokens(m["content"]) for m in fixed)
 
     tail: list[dict] = []
     kept = 0
@@ -261,7 +248,9 @@ def _recent_user_text(entries: list[dict], limit: int = 3) -> str:
 def _entry_message(e: dict) -> dict:
     """一条对话记录 → 一条消息。
 
-    **会议里听到的也算 user 侧**：那是别人对他说的，不是他说的。
+    `heard`（他听到别人说的）是**老记录**里才有的：0.8.0 之前有"会议"模式，
+    后面的人听得到前面的人；从老项目搬来的记录里也有。现在不再产生新的，
+    但读的时候照旧当成"别人对他说的"——那是他真经历过的事。
     带上说话人的名字，否则模型会把别人的观点当成自己刚说过的。
     """
     role = "user" if e.get("kind") in (KIND_YOU, KIND_HEARD) else "assistant"

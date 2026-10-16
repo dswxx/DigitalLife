@@ -27,7 +27,7 @@ PROVIDER_PRESETS: list[dict] = _DATA["providerPresets"]
 SEED_TEMPLATES: list[dict] = _DATA["seedTemplates"]
 
 # 纯基线模板（原来的「裸模型」）：一个 system 字段都不发。
-# 用途是当探针——同一个问题，一个席位放鲁迅、另一个放纯基线，
+# 用途是当探针——同一个问题，一位放鲁迅、另一位放纯基线，
 # 就能看出差异有多少来自提示词。它**不积累记忆**（探针不是陪伴）。
 BARE_TEMPLATE: dict = _DATA["bareTemplate"]
 
@@ -44,9 +44,13 @@ DISTILL_SYSTEM: str = _DATA["distillSystem"]
 # ── 数据版本 ──
 #
 # 老项目最后停在 7（v7 把超出范围的高级设置纠正回范围内）。
-# 新项目从头开始记自己的版本号，8 是"生命/记忆"这一代的第一次结构变化：
-# humans.json（一个数组）拆成 templates/（模板）+ humans/<id>/（生命）。
-DATA_VERSION = 8
+# 新项目从头开始记自己的版本号：
+#   8 = "生命/记忆"这一代的第一次结构变化：humans.json（一个数组）
+#       拆成 templates/（模板）+ humans/<id>/（生命）。
+#   9 = 会话文件里不再有 mode（圆桌那套取消了，只剩"一问多答"一种行为）。
+#       老文件里那个字段被忽略，下次保存自然就没了——**没有文件需要改写**，
+#       记录是只增不减的、结构没动，所以这一版没有迁移函数。
+DATA_VERSION = 9
 
 DEFAULT_SETTINGS: dict = {
     "version": DATA_VERSION,

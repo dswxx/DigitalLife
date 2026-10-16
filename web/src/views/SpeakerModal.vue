@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 席位配置：这号座位上放谁、用哪个模型。
+ * 这次问谁：把谁加进来、他用哪个模型。
  *
- * 老界面也是这么做的（点席位卡片弹出来选），所以照它来：
+ * 老界面也是这么做的（点卡片弹出来选），所以照它来：
  * 按平台分组的可选列表 + 这家有哪些模型。
  * `modalSeat === 0` 表示"新加一个座位"。
  */
@@ -75,7 +75,7 @@ async function apply() {
   <div class="modal-mask" @click.self="app.closeModal()">
     <div class="modal">
       <div class="modal-head">
-        <h3>{{ isNew ? '加一个席位' : `配置第 ${app.modalSeat} 号座位` }}</h3>
+        <h3>{{ isNew ? '加一位' : `换第 ${app.modalSeat} 位` }}</h3>
         <div style="flex: 1"></div>
         <button class="btn tiny" @click="app.closeModal()">关闭</button>
       </div>

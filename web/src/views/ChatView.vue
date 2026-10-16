@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * 圆桌对话。**骨架照老界面**：
+ * 一问多答。**骨架照老界面**：
  *
- *   .thread-head  标题（可改名）+ 「N 位」+ 并排/会议 分段
- *   .seat-bar     席位卡（点一下改配置）+「＋ 添加席位」
+ *   .thread-head  标题（可改名）+ 「N 位」
+ *   .seat-bar     这次问谁（点一下换人）+「＋ 加一位」
  *   .timeline     可滚动：一轮一轮往下堆（.round = 提问气泡 + 回答网格）
  *   .composer     底部输入区
  *
@@ -18,7 +18,6 @@ const app = useApp()
 const title = ref('')
 
 const session = computed(() => app.currentSession)
-const mode = computed(() => session.value?.mode ?? 'parallel')
 
 const EXAMPLES = [
   '我三十三岁，想辞掉稳定工作去写小说，你怎么看？',
@@ -32,14 +31,14 @@ onMounted(async () => {
     app.currentSessionId = app.sessions[0].id
     app.syncSeatsFromSession()
   }
-  title.value = session.value?.title ?? '新的圆桌'
+  title.value = session.value?.title ?? '新的对话'
   if (!app.rounds.length) await app.loadRounds()
 })
 
 watch(
   () => app.currentSessionId,
   async () => {
-    title.value = session.value?.title ?? '新的圆桌'
+    title.value = session.value?.title ?? '新的对话'
     await app.loadRounds()
   },
 )
@@ -47,7 +46,7 @@ watch(
 async function rename() {
   const s = session.value
   if (!s) return
-  const updated = await api.updateSession(s.id, { title: title.value || '新的圆桌' })
+  const updated = await api.updateSession(s.id, { title: title.value || '新的对话' })
   app.sessions = app.sessions.map((x) => (x.id === updated.id ? updated : x))
 }
 
@@ -80,16 +79,12 @@ function fmtTime(ms: number) {
       :title="
         session
           ? '点一下可以改名字'
-          : '桌上还没人。加一位进来，这张桌子才真的存在，那时候再改名'
+          : '还没选人。加一位进来，这次对话才真的存在，那时候再改名'
       "
       @change="rename"
     />
     <span class="pill">🗣️ {{ app.seats.length }} 位</span>
     <div style="flex: 1"></div>
-    <div class="mode-switch">
-      <button :class="{ on: mode === 'parallel' }" @click="app.setMode('parallel')">并排作答</button>
-      <button :class="{ on: mode === 'council' }" @click="app.setMode('council')">圆桌会议</button>
-    </div>
   </div>
 
   <div class="seat-bar">
@@ -105,21 +100,21 @@ function fmtTime(ms: number) {
         <div class="nm">{{ seat.name }}</div>
         <div class="md">{{ seat.model || '没选模型' }}</div>
       </div>
-      <button class="seat-del" title="移出这张桌子" @click.stop="app.removeSeat(seat.seatNo)">✕</button>
+      <button class="seat-del" title="这次不问他" @click.stop="app.removeSeat(seat.seatNo)">✕</button>
     </div>
-    <button class="seat-chip add" @click="app.openModal('speaker', '0')">＋ 添加席位</button>
+    <button class="seat-chip add" @click="app.openModal('speaker', '0')">＋ 加一位</button>
   </div>
 
   <div class="timeline">
-    <!-- 空状态：老界面那句「圆桌已经摆好，就等你开口」 -->
+    <!-- 空状态 -->
     <div v-if="!app.rounds.length && !app.loading" class="empty">
       <div class="big">🎙️</div>
-      <h3>圆桌已经摆好，就等你开口</h3>
+      <h3>一问多答：问一句，他们各自答</h3>
       <p>
         {{
           app.seats.length
             ? '同一个问题会同时送到下面每一位那里，谁先想清楚谁先开口。'
-            : '先从上面「＋ 添加席位」放几位数字人上来。'
+            : '先从上面「＋ 加一位」把数字人叫来。'
         }}
       </p>
       <div class="row wrap" style="justify-content: center; margin-top: 14px">
@@ -186,8 +181,8 @@ function fmtTime(ms: number) {
         :disabled="!app.seats.length"
         :placeholder="
           app.seats.length
-            ? '把你的问题写在这里，一次发给圆桌上的所有人……'
-            : '先从上面添加席位，再开口'
+            ? '把你的问题写在这里，一次发给这几位……'
+            : '先从上面加一位，再开口'
         "
         @keydown="onKey"
       ></textarea>
@@ -198,16 +193,13 @@ function fmtTime(ms: number) {
         :disabled="!app.seats.length || !app.question.trim()"
         @click="app.sendQuestion()"
       >
-        发给全桌
+        发给这几位
       </button>
     </div>
     <div class="composer-hint">
-      <span v-if="!app.seats.length">⚠ 还没有席位，点上面的「＋ 添加席位」去放人</span>
+      <span v-if="!app.seats.length">⚠ 还没选人，点上面的「＋ 加一位」</span>
       <span v-else>
-        模式：{{
-          mode === 'council' ? '圆桌会议（按顺序，后面的人听得到前面）' : '并排作答（同时答，互相听不到）'
-        }}
-        · Enter 发送 · Shift+Enter 换行
+        他们同时答，互相听不到对方 · Enter 发送 · Shift+Enter 换行
       </span>
       <div class="spacer"></div>
       <span>历史：{{ app.rounds.length }} 轮</span>

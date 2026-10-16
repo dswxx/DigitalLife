@@ -3,7 +3,7 @@
  * 「一生」：这位数字人的时间线。
  *
  * **按天分组**，不是流水账列表——他要活很久，流水账翻不动。
- * 每天两样东西：那天和他说过话的会话（能点回圆桌）、那天记住的事。
+ * 每天两样东西：那天和他说过话的对话、那天记住的事。
  * 全部从记录和记忆算出来，不额外存一份（原文是真相，时间线是派生物）。
  */
 import { onMounted, ref } from 'vue'
@@ -88,7 +88,7 @@ function born(ms: number) {
         <div v-else-if="!days.length" class="empty">
           <div class="big">🌱</div>
           <h3>还没有聊过</h3>
-          <p>去圆桌跟他说说话。他每聊一次，这里就多一天。</p>
+          <p>去一问多答里跟他说说话。他每聊一次，这里就多一天。</p>
         </div>
 
         <div v-for="d in days" :key="d.day" class="tl-day">

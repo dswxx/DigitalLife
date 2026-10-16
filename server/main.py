@@ -184,7 +184,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
         """保存设置。**没传的字段一律不动。**
 
         这里以前是 `payload.get("providers") or []`——前端在设置页只改「高级设置」
-        再保存时，整个平台列表（含密钥）就被清空了，之后所有席位都"找不到平台"。
+        再保存时，整个平台列表（含密钥）就被清空了，之后所有数字人都"找不到平台"。
         局部更新是常态（设置页是分区的），所以按字段判断有没有传。
         """
         data_dir = _data_dir(request)
@@ -430,7 +430,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
             slot["sessions"] = [{"id": k, "entries": v} for k, v in slot["sessions"].items()]
         return {"days": [days[k] for k in sorted(days, reverse=True)]}
 
-    # ─────────────────────── 桌子 ───────────────────────
+    # ─────────────────────── 一次对话（问了谁）───────────────────────
 
     @app.get("/api/sessions")
     def list_sessions(request: Request):
@@ -445,8 +445,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
             raise HTTPException(400, f"这个会话 id 已经存在：{sid}")
         s = sessions.create(
             data_dir,
-            title=payload.get("title") or "新的圆桌",
-            mode=payload.get("mode") or "parallel",
+            title=payload.get("title") or sessions.DEFAULT_TITLE,
             seats=list(payload.get("seats") or []),
             session_id=sid,
         )
@@ -457,11 +456,9 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
         data_dir = _data_dir(request)
         s = sessions.load(data_dir, session_id)
         if s is None:
-            raise HTTPException(404, f"没有这张桌子：{session_id}")
+            raise HTTPException(404, f"没有这次对话：{session_id}")
         if payload.get("title") is not None:
             s.title = str(payload["title"])
-        if payload.get("mode") in sessions.MODES:
-            s.mode = payload["mode"]
         if payload.get("seats") is not None:
             s.seats = sessions.normalize_seats(list(payload["seats"]))
         sessions.save(data_dir, s)
@@ -470,7 +467,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
     @app.delete("/api/sessions/{session_id}")
     def delete_session(request: Request, session_id: str):
         if not sessions.delete(_data_dir(request), session_id):
-            raise HTTPException(404, f"没有这张桌子：{session_id}")
+            raise HTTPException(404, f"没有这次对话：{session_id}")
         return {"ok": True}
 
     # ─────────────────────── 问一句（核心）───────────────────────

@@ -85,7 +85,7 @@ def main() -> int:
     adv = presets.DEFAULT_SETTINGS["advanced"]
     old_adv = json.loads((ROOT / "server" / "presets.json").read_text(encoding="utf-8"))["defaultSettings"]["advanced"]
     check(adv == old_adv, f"高级设置的默认值和老项目一致：{adv}")
-    check(presets.DEFAULT_SETTINGS["version"] == 8, "数据版本是 8（新项目的第一代）")
+    check(presets.DEFAULT_SETTINGS["version"] == 9, "数据版本是 9（取消圆桌那一版）")
     check(presets.DEFAULT_CONTEXT_WINDOW == 128000, "兜底窗口 128k")
 
     print(f"\n{'─' * 46}")
