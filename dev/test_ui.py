@@ -373,14 +373,15 @@ def main() -> int:
         # 版本号是**从 /api/health 读的**，不是前端写死的——
         # 盯着它，因为写死过一次（改了后端版本，页面上还在骗人）。
         # 断言方式：跟接口报的值比，**不要写死版本号**（不然每次发版都得改测试）。
-        # 它在「模型与密钥」这一页的页头上（老界面把它放在顶栏，骨架改了位置没改）。
+        # 它在「模型与密钥」页最下面那块「你的数据在哪」（老界面也放这一带）。
         health = httpx.get(f"{base}/api/health", headers=H, timeout=10).json()
         br.eval("location.hash = '#/settings'; return 1")
         check(br.wait_for("document.querySelector('.page-head')"), "设置页起来了")
-        foot = br.text(".page-head")
-        check(health["version"] in foot, f"页头显示的是后端报的版本 {health['version']}：{foot}")
-        check(f"数据格式 v{health['dataVersion']}" in foot, f"数据版本也是从接口来的：{foot}")
-        # 版本在设置页头上（老界面挂在顶栏），所以看完得回库——后面几段都在库上跑。
+        check(br.wait_for("document.querySelector('.provider-card')"), "已添加的平台一行一家")
+        foot = br.text(".page")
+        check(health["version"] in foot, f"页面显示的是后端报的版本 {health['version']}")
+        check(f"数据格式 v{health['dataVersion']}" in foot, f"数据版本也是从接口来的（v{health['dataVersion']}）")
+        # 版本在设置页，所以看完得回库——后面几段都在库上跑。
         br.goto(f"{base}/#/humans", "document.querySelectorAll('.human-card:not(.is-tpl)').length > 0")
         if SHOTS:
             br.shot(root / "shots" / "1-library.png")
@@ -518,16 +519,27 @@ def main() -> int:
         check(second < first or (first >= 1 and second == 0),
               f"第二轮没有再说一遍那句话（{first} → {second}）")
 
-        # ── 6. 设置 ──
-        print("\n── 设置 ──")
+        # ── 6. 设置（模型与密钥）──
+        print("\n── 模型与密钥 ──")
         br.eval("location.hash = '#/settings'; return 1")
-        check(br.wait_for("document.querySelector('.category-block')"), "设置页打开了")
+        check(br.wait_for("document.querySelector('.provider-card')"), "设置页打开了")
         body = br.text(".page")
         check("假上游" in body, "平台列出来了")
         check("sk-mock-secret-1234" not in body, "**密钥没有明文出现在页面上**（后端只回掩码）")
-        check(br.count("input[type=password]") >= 1, "密钥框是密码框")
-        check("单次回答最长 token" in body, "高级设置在上面")
-        check("上限不是目标" in body, "写清了「这是上限不是目标」（免得有人以为调大就答更长）")
+        check(br.count(".provider-card .pr-head .pill.ok") >= 1, "密钥显示成掩码（🔒 sk-m…1234 那种）")
+        check(br.count(".preset-tile") >= 9, f"一键添加的模板有 {br.count('.preset-tile')} 格")
+        check("高级设置" not in body, "高级设置这一版没有界面（你说暂时不需要）")
+        check("你的数据在哪" in body and "data/settings.json" in body, "写清了数据在哪、能整拷走")
+        check(br.eval("return !!document.querySelector('.preset-tile')"), "模板格子可点")
+        # 编辑一家：密钥是密码框、能测能拉，这些都在弹窗里
+        br.click_text(".provider-card button", "编辑")
+        check(br.wait_for("document.querySelector('.modal')"), "编辑弹窗打开了")
+        check(br.count(".modal-body input[type=password]") >= 1, "密钥框是密码框")
+        check(br.count(".modal-body textarea") >= 1, "模型列表是一个一行、能直接改")
+        check(len(br.eval("return [...document.querySelectorAll('.modal-body input')]") or []) >= 3,
+              "名称 / Base URL / 密钥 都在")
+        br.click_text(".modal-foot button", "取消")
+        check(br.wait_for("!document.querySelector('.modal')", 8), "取消就关掉，不动数据")
         if SHOTS:
             br.shot(root / "shots" / "5-settings.png")
 

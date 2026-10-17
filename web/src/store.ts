@@ -9,7 +9,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { api, ask, type Advanced, type LifeSummary, type Provider, type Seat, type Session, type StreamEvent, type Template } from './api'
+import { api, ask, type Advanced, type LifeSummary, type Provider, type ProviderPreset, type Seat, type Session, type StreamEvent, type Template } from './api'
 
 /** 这次要问的一位。 */
 export interface SeatConfig {
@@ -58,6 +58,7 @@ export const useApp = defineStore('app', {
     dataVersion: 0,
     dataDir: '',
     providers: [] as Provider[],
+    providerPresets: [] as ProviderPreset[],
     advanced: {} as Advanced,
     templates: [] as Template[],
     lives: [] as LifeSummary[],
@@ -118,6 +119,7 @@ export const useApp = defineStore('app', {
         this.dataDir = health.dataDir
         const b = await api.bootstrap()
         this.providers = b.settings.providers
+        this.providerPresets = b.providerPresets ?? []
         this.advanced = b.settings.advanced
         this.templates = b.templates
         this.lives = b.lives

@@ -10,6 +10,50 @@
   border-style: dashed;
 }
 
+/* ── 表单控件：把老界面的 .input / .textarea / .select 补上 ──
+   老界面给每个控件挂了一个类（`.input`），老 CSS 里只对**类**负责。
+   这一版写的是原生 <input>，于是它们退回浏览器默认样式：窄、没边框、字号不对
+   （Base URL 那种长内容直接被截掉一截）。这里按老那份的形状补一遍，
+   **不碰 old-app.css**，只让原生控件长得跟它一样。 */
+.page input:not([type='checkbox']):not([type='radio']),
+.page select,
+.page textarea,
+.modal input:not([type='checkbox']):not([type='radio']),
+.modal select,
+.modal textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  outline: none;
+  transition: border-color 0.13s;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.page input:focus,
+.page select:focus,
+.page textarea:focus,
+.modal input:focus,
+.modal select:focus,
+.modal textarea:focus {
+  border-color: var(--accent-dim);
+}
+
+.page textarea,
+.modal textarea {
+  resize: vertical;
+  line-height: 1.6;
+  font-family: inherit;
+}
+
+/* 密码框的小锁提示、数字框的宽度：照老界面的样子，别撑满整行 */
+.modal .field input[type='number'] {
+  max-width: 160px;
+}
+
 /* ── 对话还不存在的时候（一个人都没选），标题框是灰的 ──
    不灰的话它看着能改，改了半天什么也没发生——那是最糟的一种"没反应"。 */
 .thread-title-input:disabled {

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import secrets
+import time
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -171,6 +172,9 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
             "lives": [_summary(data_dir, l) for l in Life.list_all(data_dir / "humans")],
             "sessions": [sessions.summary(data_dir, s) for s in sessions.list_all(data_dir)],
             "memTypes": list(MEM_TYPES),
+            # 设置页那排「一键添加平台模板」。它是**数据**（放 presets.json），
+            # 前端只管画——加一家平台不用改前端代码。
+            "providerPresets": presets.PROVIDER_PRESETS,
         }
 
     # ─────────────────────── 设置与平台 ───────────────────────
@@ -203,12 +207,24 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.post("/api/providers/{provider_id}/models")
     def fetch_models(request: Request, provider_id: str):
+        """拉这家有哪些模型，并**记下来**（列表 + 拉取时间）。
+
+        为什么要落盘：设置页那一行要显示「4 个模型 · 模型列表 9月19日拉过」，
+        数字人里选模型也要能下拉。只回给浏览器的话，刷新一次就没了。
+        密钥仍然只回掩码（`settings_mod.save` 认得掩码、保留真钥）。
+        """
+        data_dir = _data_dir(request)
         st = _settings(request)
         prov = settings_mod.provider(st, provider_id)
         if prov is None:
             raise HTTPException(404, f"没有这家平台：{provider_id}")
         got = list_models(prov, transport=request.app.state.transport)
-        return {"models": got}
+        stamp = int(time.time() * 1000)
+        providers = [{**p, "models": got, "modelsFetchedAt": stamp}
+                     if p.get("id") == provider_id else p for p in st["providers"]]
+        saved = settings_mod.save(data_dir, {**st, "providers": providers})
+        request.app.state.settings_cache = saved
+        return {"models": got, "modelsFetchedAt": stamp}
 
     @app.post("/api/providers/{provider_id}/test")
     def test_provider(request: Request, provider_id: str):
@@ -335,13 +351,20 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.delete("/api/lives/{life_id}")
     def delete_life(request: Request, life_id: str):
-        """删一位数字人。**会把他的记忆一起删掉**——所以前端一定要二次确认，
-        别做成"点一下就没了"。"""
+        """删一位数字人。**不立刻抹掉，先挪进 `data/.trash/`。**
+
+        为什么不是 `rmtree`：他的记忆是这个产品的全部价值，而"删"是一次点击就能做的事。
+        真出过一次——`data/humans/` 空了，15 位个体和 108 条记录一夜之间没了
+        （原因没查出来；靠老项目那份源数据重新迁移才恢复）。
+        挪进回收站的成本几乎为零，需要的时候 `mv` 回来就完事。
+        """
         import shutil
 
         life = _life(request, life_id)
-        shutil.rmtree(life.root)
-        return {"ok": True}
+        trash = _data_dir(request) / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(life.root), str(trash / f"{life.id}-{int(time.time() * 1000)}"))
+        return {"ok": True, "movedTo": str(trash / f"{life.id}")}
 
     # ─────────────────────── 记忆 ───────────────────────
 

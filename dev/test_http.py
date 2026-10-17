@@ -239,9 +239,21 @@ def main() -> int:
         with httpx.Client(timeout=20, headers=H) as c:
             r = c.post(f"{base}/api/providers/pv_mock/test").json()
             check(r["ok"] and len(r["models"]) == 2, f"平台测试通过：{r['message']}")
-            models = c.post(f"{base}/api/providers/pv_mock/models").json()["models"]
+            got = c.post(f"{base}/api/providers/pv_mock/models").json()
+            models = got["models"]
             check([m["id"] for m in models] == ["mock-chat", "mock-reasoner"], "模型列表拿到了")
             check(models[0]["created"] == 1700000000000, "秒级时间戳在真链路上也归一成毫秒了")
+            check(bool(got.get("modelsFetchedAt")), "拉完记下了时间（设置页要显示「模型列表 X 前拉过」）")
+            saved = c.get(f"{base}/api/settings").json()["providers"][0]
+            check(len(saved.get("models") or []) == 2 and saved.get("modelsFetchedAt") == got["modelsFetchedAt"],
+                  "模型列表**落盘**了（刷新之后还在，不用每次重拉）")
+            check(saved["apiKey"] != "sk-mock-secret-1234", "落盘这一下没有把真密钥改成掩码")
+            boot = c.get(f"{base}/api/bootstrap").json()
+            presets = boot.get("providerPresets") or []
+            check(len(presets) == 9 and all({"key", "label", "kind", "baseUrl"} <= set(p) for p in presets),
+                  f"一键添加的平台模板跟着启动数据一起给（{len(presets)} 个）")
+            check(any(p["key"] == "deepseek" and p["baseUrl"].startswith("https://") for p in presets),
+                  "模板里带着 baseUrl，前端不用自己写一份")
 
         # ── 4. 建桌子 + 第一轮对话（真流式）──
         print("\n── 第一轮：真流式对话 ──")
@@ -537,7 +549,11 @@ def main() -> int:
         with httpx.Client(timeout=20, headers=H) as c:
             c.delete(f"{base}/api/sessions/{bare_sid}")
             c.delete(f"{base}/api/lives/{bare_life.id}")
-        check(not (bare_life.root / "identity.json").exists(), "裸的那位删掉了（连同他的记录）")
+        check(not (bare_life.root / "identity.json").exists(), "裸的那位从库里消失了")
+        # **但不是抹掉**：挪进 data/.trash 了。删一次点击就能做，而他的记忆是全部价值。
+        trashed = list((data_dir / ".trash").glob(f"{bare_life.id}-*")) if (data_dir / ".trash").exists() else []
+        check(len(trashed) == 1 and (trashed[0] / "identity.json").exists(),
+              f"删掉的那位在 data/.trash 里还找得回来（{trashed[0].name if trashed else '没了'}）")
 
         # ── 12. 一生（时间线）──
         print("\n── 一生 ──")

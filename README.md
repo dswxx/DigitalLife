@@ -77,7 +77,7 @@ py -3 run.py                                   # 或双击 启动数字生命.cm
 | 迁移：15 位老数字人 → 9 份蓝图 + 15 位个体 + 108 条历史 | ✅ |
 | 提炼工作台（把一本书炼成一份人格） | ⬜ 暂缓（提示词已搬好并核过，想接就能接） |
 
-**测试 570 项**：后端与文档 510、真浏览器 60。全部离线跑，不需要联网。
+**测试 584 项**：后端与文档 516、真浏览器 68。全部离线跑，不需要联网。
 怎么跑、每套验什么，见 [`开发指南.md`](开发指南.md)。**这串数字只有这一处**——
 改了测试记得同步它（每一套跑完都会自己打印"通过多少项"）。
 
@@ -89,8 +89,8 @@ py -3 run.py                                   # 或双击 启动数字生命.cm
 
 ```
 GET    /api/health                            版本、接口版本、数据版本
-GET    /api/bootstrap                         启动要的一切（设置+模板+生命+对话）
-GET    /api/settings                          平台/高级设置（**密钥只回掩码**）
+GET    /api/bootstrap                         启动要的一切（设置+模板+生命+对话+平台模板）
+GET    /api/settings                          平台设置（**密钥只回掩码**）
 POST   /api/settings                          保存（没传的字段一律不动）
 POST   /api/providers/{id}/models             拉这家有哪些模型
 POST   /api/providers/{id}/test               连通性测试
@@ -120,13 +120,14 @@ POST   /api/ask                               **流式对话**（NDJSON，一行
 
 ```
 data/
-├── settings.json               平台 / 密钥 / 高级设置 / 从平台学到的模型上限
+├── settings.json               平台 / 密钥 / 预算参数 / 从平台学到的模型上限
 ├── templates/<模板>.json       人格蓝图
 ├── sessions/<对话>.json        这次对话：问了谁、什么时候开的
-└── humans/<生命>/
-    ├── identity.json           来自哪个蓝图、绑哪家 API、什么时候出生
-    ├── memory/                 长期记忆：目录 + 一条一个 Markdown
-    └── sessions/               他亲历的记录（JSONL）+ 水位线索引
+├── humans/<生命>/
+│   ├── identity.json           来自哪个蓝图、绑哪家 API、什么时候出生
+│   ├── memory/                 长期记忆：目录 + 一条一个 Markdown
+│   └── sessions/               他亲历的记录（JSONL）+ 水位线索引
+└── .trash/                     删掉的数字人先挪到这儿（不立刻抹掉，能捞回来）
 ```
 
 两个格式是**有意区分**的：

@@ -27,6 +27,21 @@ export interface Provider {
   apiKey: string
   hasKey?: boolean
   models?: { id: string; created?: number }[]
+  /** 上次成功拉模型列表的时间（设置页显示「模型列表 X 前拉过」） */
+  modelsFetchedAt?: number
+  /** 从哪个平台模板加进来的（那排方块用它打 ✓） */
+  presetKey?: string | null
+}
+
+/** 「一键添加平台模板」那一格：数据在 `presets.json` 里，前端只负责画。 */
+export interface ProviderPreset {
+  key: string
+  label: string
+  kind: 'openai' | 'anthropic'
+  baseUrl: string
+  models: string[]
+  note?: string
+  consoleUrl?: string
 }
 
 export interface Template {
@@ -165,7 +180,8 @@ export const api = {
   getSettings: () => get<{ providers: Provider[]; advanced: Advanced }>('/api/settings'),
   saveSettings: (payload: { providers?: Provider[]; advanced?: Partial<Advanced> }) =>
     post<{ providers: Provider[]; advanced: Advanced }>('/api/settings', payload),
-  fetchModels: (id: string) => post<{ models: { id: string }[] }>(`/api/providers/${id}/models`),
+  fetchModels: (id: string) =>
+    post<{ models: { id: string }[]; modelsFetchedAt: number }>(`/api/providers/${id}/models`),
   testProvider: (id: string) =>
     post<{ ok: boolean; message: string; models: { id: string }[] }>(`/api/providers/${id}/test`),
 

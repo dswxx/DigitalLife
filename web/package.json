@@ -1,6 +1,6 @@
 {
   "name": "digitallife-web",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "description": "数字生命的前端：数字人库、圆桌对话、记忆编辑器、一生时间线",
