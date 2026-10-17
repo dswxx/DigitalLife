@@ -468,15 +468,19 @@ def main() -> int:
               "问完清空输入框（不让人以为没发出去）")
 
         # 加一位——这是**用户第一件要做的事**（一开始一个人都没选）。
-        # 弹窗里是两步：先点那位数字人，再点「加进来」。只点人什么都不会发生，
-        # 所以这里两步都走，并且断言真的多了一位。
+        # 弹窗里是两级：先点平台（.pick-cat），再点那家的某一位（.pick-cell），
+        # 最后「加进来」。少点一步就什么都不会发生，所以这里三步都走。
         seats_before = br.count(".seat-chip:not(.add)")
         br.click_text(".seat-bar button", "加一位")
         check(br.wait_for("document.querySelector('.modal')"), "加人弹窗打开了")
+        check(br.count(".pick-cat") >= 1, f"先按平台分组：{br.count('.pick-cat')} 块")
+        check(br.count(".pick-cat.on") == 1, "默认选中一块（不用先猜一次）")
         picked = br.eval(
-            "const b=[...document.querySelectorAll('.modal-body button')][0];"
-            "if(!b) return ''; const t=b.innerText.trim(); b.click(); return t")
+            "const cells=[...document.querySelectorAll('.pick-cell')];"
+            "const c=cells[0]; if(!c) return ''; const t=c.innerText.trim(); c.click(); return t")
         check(bool(picked), f"在弹窗里挑了一位：{picked}")
+        check(br.eval("return !!document.querySelector('.pick-cell.on')"), "点中的那位有选中标记")
+        check(br.eval("return !!document.querySelector('.advanced')"), "挑完人之后才出现「高级设置」")
         br.click_text(".modal-foot button", "加进来")
         check(br.wait_for(f"document.querySelectorAll('.seat-chip:not(.add)').length === {seats_before + 1}", 10),
               f"「加进来」之后多了一位（{seats_before} → {seats_before + 1}）")
