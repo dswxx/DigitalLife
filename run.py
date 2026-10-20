@@ -1,22 +1,9 @@
-"""启动数字生命。
-
-    py -3 run.py                  # 起服务，端口自己挑一个空着的
-    py -3 run.py --port 8787      # 指定端口
-    py -3 run.py --data D:/某处   # 指定数据目录（默认 ./data）
-    py -3 run.py --reload         # 改了后端代码自动重启（开发用）
-
-为什么还要一个启动脚本，而不直接 `uvicorn server.main:app`：
-
-  1. **第一件事是检查依赖并说人话。** 没装 fastapi 时报一句
-     "py -3 -m pip install fastapi uvicorn httpx"，而不是一屏 import 报错
-  2. **只绑 127.0.0.1**（三层安全的第一层），不给一个能听外网的启动方式
-  3. 数据目录不存在时建好并**播种内置人格模板**，第一次打开就有东西看
-  4. 端口被占用时自动换一个，并**告诉你换了哪个**
-"""
+"""本机启动入口：初始化数据、选择端口并启动服务。开发热重载使用 --reload。"""
 
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 from pathlib import Path
@@ -41,7 +28,8 @@ def free_port(preferred: int) -> tuple[int, bool]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="启动数字生命")
     ap.add_argument("--port", type=int, default=8787)
-    ap.add_argument("--data", default="data", help="数据目录（默认 ./data）")
+    ap.add_argument("--data", default=str(Path(__file__).resolve().parent / "data"),
+                    help="数据目录（默认项目内 data/）")
     ap.add_argument("--reload", action="store_true", help="改了后端代码自动重启（开发用）")
     args = ap.parse_args()
 
@@ -73,7 +61,6 @@ def main() -> int:
         })
 
     port, moved = free_port(args.port)
-    app = appmod.create_app(data_dir)
     url = f"http://127.0.0.1:{port}"
 
     print()
@@ -93,8 +80,13 @@ def main() -> int:
         print("  （之后正常启动不用再构建）")
     print()
 
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning",
-                reload=args.reload, app_dir=str(Path(__file__).resolve().parent))
+    if args.reload:
+        os.environ["DL_DATA_DIR"] = str(data_dir)
+        uvicorn.run("server.main:app", host="127.0.0.1", port=port, log_level="warning",
+                    reload=True, app_dir=str(Path(__file__).resolve().parent),
+                    reload_dirs=[str(Path(__file__).resolve().parent / "server")])
+    else:
+        uvicorn.run(appmod.create_app(data_dir), host="127.0.0.1", port=port, log_level="warning")
     return 0
 
 

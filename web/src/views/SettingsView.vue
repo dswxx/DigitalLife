@@ -1,20 +1,5 @@
 <script setup lang="ts">
-/**
- * 模型与密钥。**骨架就是老界面那一页**：
- *
- *   .page-head            标题 + 一句话
- *   .side-label + .provider-card   已添加的平台（一行一家）
- *   .preset-grid > .preset-tile    一键添加平台模板（数据在 presets.json）
- *   .card                          你的数据在哪
- *
- * 两条从老项目继承的规矩在这一页落地：
- *   · **密钥只回掩码**：拿到的是 `sk-a…1234`，原样回传时后端会认出那是掩码、
- *     保留真密钥。所以只要不主动改那个框，密钥就不会被写坏。
- *   · **不静默改用户的设置**：保存后后端如果纠正了什么，明确显示出来。
- *
- * 高级设置（最长 token / 记忆轮数 / 窗口 / 超时）**这一版没有界面**——
- * 你说暂时不需要。值还在 settings.json 里，后端照旧用默认值。
- */
+/** 管理平台、密钥和模型列表；提交密钥掩码时由后端保留真实值。 */
 import { computed, ref } from 'vue'
 import { api, API_VERSION, type Provider, type ProviderPreset } from '../api'
 import { useApp } from '../store'
@@ -245,10 +230,10 @@ async function pull(p: Provider) {
           · <span class="mono-sm">data/templates/*.json</span> —— 人格蓝图
         </div>
         <div class="hint">
-          · <span class="mono-sm">data/sessions/*.json</span> —— 每一次对话问了谁
+          · <span class="mono-sm">data/sessions/&lt;会话&gt;/</span> —— 会话概况与完整消息
         </div>
         <div class="hint">
-          · <span class="mono-sm">data/humans/&lt;生命&gt;/</span> —— 他的身份、长期记忆和亲历记录
+          · <span class="mono-sm">data/humans/&lt;生命&gt;/history.jsonl</span> —— 从创建起的统一亲历记录
         </div>
         <div class="hint" style="margin-top: 8px">
           版本 <b>{{ app.version }}</b> · 数据格式 v{{ app.dataVersion }} · 接口 v{{ apiVersion }}

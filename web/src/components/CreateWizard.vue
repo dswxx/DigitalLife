@@ -1,26 +1,20 @@
 <script setup lang="ts">
-/**
- * 新建数字人：**两步，别的都不要。**
- *
- *   ① 人格（从蓝图挑 / 现场写）   ② 选一家平台（平台 → 模型）
- *
- * 编号只出现在这里——因为它真的有先后顺序：没有蓝图就没有"谁"，
- * 没有平台就没有"在哪活着"。其余地方一律不加编号。
- */
+/** 创建流程：选择或编写人格，再选择平台和模型；普通 AI 直接进入模型选择。 */
 import { computed, ref, watch } from 'vue'
 import { api, type Template } from '../api'
 import { useApp } from '../store'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'created', lifeId: string): void }>()
+const props = defineProps<{ templateId?: string }>()
 const app = useApp()
 
-const step = ref<1 | 2>(1)
+const step = ref<1 | 2>(props.templateId && app.templateById(props.templateId)?.bare ? 2 : 1)
 const mode = ref<'template' | 'write'>('template')
-const templateId = ref('')
+const templateId = ref(props.templateId ?? '')
 const draft = ref({ name: '', emoji: '🙂', tagline: '', system: '' })
 const providerId = ref('')
 const model = ref('')
-const models = ref<{ id: string }[]>([])
+const models = computed(() => app.providerById(providerId.value)?.models ?? [])
 const fetching = ref(false)
 const busy = ref(false)
 const problem = ref('')
@@ -35,21 +29,24 @@ watch(
   { immediate: true },
 )
 
-async function pick(p: string) {
+function pick(p: string) {
   providerId.value = p
-  models.value = []
   model.value = app.providerById(p)?.models?.[0]?.id ?? ''
-  await loadModels()
 }
 
 async function loadModels() {
   if (!providerId.value) return
+  const id = providerId.value
   fetching.value = true
   problem.value = ''
   try {
-    const got = await api.fetchModels(providerId.value)
-    models.value = got.models
-    if (!model.value && got.models.length) model.value = got.models[0].id
+    const got = await api.fetchModels(id)
+    const provider = app.providerById(id)
+    if (provider) {
+      provider.models = got.models
+      provider.modelsFetchedAt = got.modelsFetchedAt
+    }
+    if (providerId.value === id && !model.value && got.models.length) model.value = got.models[0].id
   } catch (e) {
     problem.value = (e instanceof Error ? e.message : String(e)) + '（可以在下面手动填模型名）'
   } finally {
@@ -61,6 +58,10 @@ async function create() {
   busy.value = true
   problem.value = ''
   try {
+    if (!providerId.value || !model.value.trim()) {
+      problem.value = '先选平台并填写模型'
+      return
+    }
     let tid = templateId.value
     if (mode.value === 'write') {
       if (!draft.value.name.trim()) {
@@ -78,14 +79,6 @@ async function create() {
     }
     if (!tid) {
       problem.value = '先选一份人格蓝图'
-      return
-    }
-    if (!providerId.value) {
-      problem.value = '选一家平台，他要在那家平台上活着'
-      return
-    }
-    if (!model.value.trim()) {
-      problem.value = '选一个模型'
       return
     }
     const life = await api.createLife({
@@ -114,7 +107,7 @@ const canNext = computed(() =>
   <div class="modal-mask" @click.self="emit('close')">
     <div class="modal wide">
       <div class="modal-head">
-        <h3>新建数字人</h3>
+        <h3>{{ picked?.bare ? '添加 AI 模型' : '新建数字人' }}</h3>
         <div style="flex: 1"></div>
         <button class="btn tiny" @click="emit('close')">关闭</button>
       </div>
@@ -137,8 +130,8 @@ const canNext = computed(() =>
 
           <template v-if="mode === 'template'">
             <p class="composer-hint" style="margin-bottom: 10px">
-              蓝图是「这个人是谁」（不绑厂商、没有记忆）。用它创建出来的是一个**个体**，
-              从此刻起有自己的记忆。
+              蓝图是「这个人是谁」（不绑厂商、没有记忆）。用它创建出来的是一个个体，
+              从创建起保存独立的对话历史。
             </p>
             <div class="grid-cards">
               <button
@@ -164,7 +157,7 @@ const canNext = computed(() =>
             <div v-if="picked" style="margin-top: 14px">
               <div class="opt-group-head">{{ picked.emoji }} {{ picked.name }} 的人格</div>
               <p v-if="picked.bare" class="answer-note">
-                这份蓝图是**纯基线**：请求里一个 system 字段都不发，连时间感和记忆都不注入。
+                普通 AI 对话：保留本次聊天记录，不加载人格或其他会话的历史。
               </p>
               <textarea
                 v-else
@@ -201,7 +194,8 @@ const canNext = computed(() =>
         <!-- ── 第二步：平台与模型 ── -->
         <template v-else>
           <p class="composer-hint" style="margin-bottom: 10px">
-            他会在这家平台上活着、积累自己的记忆。同一份蓝图可以建很多个个体（比如各绑一家）。
+            <template v-if="picked?.bare">选一家平台和模型，加入一问多答。每个模型各自保留本次聊天记录。</template>
+            <template v-else>他会在这家平台上活着、积累自己的对话历史。同一份蓝图可以建很多个个体（比如各绑一家）。</template>
           </p>
           <div v-if="!app.providers.length" class="empty">
             <div class="big">🔑</div>

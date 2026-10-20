@@ -1,23 +1,18 @@
-"""OpenAI 兼容协议（DeepSeek / Kimi / OpenAI / 通义 / Ollama …）。
-
-绝大多数平台都是这一套，所以这个适配器是主力。
-请求体的组装和事件解析都是**纯函数**——网络那一层在 `core.post_stream`。
-"""
+"""OpenAI 兼容协议的请求组装与流式事件解析。"""
 
 from __future__ import annotations
 
 import json
 
-from .core import DEFAULT_MAX_TOKENS, StreamPlan, endpoint, temperature_field
+from .core import DEFAULT_MAX_TOKENS, StreamPlan, endpoint
 
 
 def build_plan(provider: dict, *, model: str, system: str | None, messages: list[dict],
-               temperature=None, max_tokens: int = DEFAULT_MAX_TOKENS) -> StreamPlan:
+               max_tokens: int = DEFAULT_MAX_TOKENS) -> StreamPlan:
     """组装请求。**system 单独放在 messages 最前面**（这一套协议就是这么表达人格的）。"""
     body = {
         "model": model,
         "stream": True,
-        **temperature_field(temperature),
         "max_tokens": max_tokens,
         "messages": ([{"role": "system", "content": system}] if system else []) + list(messages),
     }
@@ -33,17 +28,7 @@ def build_plan(provider: dict, *, model: str, system: str | None, messages: list
 
 
 def parse_event(evt: dict) -> list[dict]:
-    """一条 SSE 事件 → 若干个块（text / reasoning / usage / finish / error）。
-
-    这里有两处以前出过事的细节：
-
-    1. **`finish_reason` 必须看。** 推理模型经常"思考把额度吃光、正文一个字都没轮到"，
-       这时 `finish_reason` 是 `length`。不看它，用户只会看到一个空回复，
-       完全猜不出为什么。（老项目那个"卡在思考中"就是这么来的。）
-
-    2. **思考过程有两种字段名**：`reasoning_content`（DeepSeek/Kimi 系）
-       和 `reasoning`（OpenRouter 等），两个都要认。
-    """
+    """将 SSE 事件映射为 text、reasoning、usage、finish 或 error。兼容两种 reasoning 字段，保留结束原因以识别输出截断。"""
     out: list[dict] = []
     if not isinstance(evt, dict):
         return out

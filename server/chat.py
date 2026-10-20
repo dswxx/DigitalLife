@@ -1,228 +1,111 @@
-"""一次提问：**请求路径的全过程**。
-
-这一步把前面所有层串起来，而且是整个后端唯一"用户盯着屏幕等"的地方，
-所以三条规矩在这里必须同时成立：
-
-  1. **请求路径永远不调用模型做压缩。** 只做确定性裁剪（`context.build_context`）。
-     压缩在后台、在上一轮结束之后（`memory.compress`）。
-  2. **失败要可见。** 一位挂了不能让其他人消失，也不能让整轮没有输出；
-     每块都带 `seatNo`，前端照着往卡片上贴。
-  3. **不静默改用户的设置。** 温度被摘、输出上限被改，都通过 notice 说出来。
-
-两种规矩……**只剩一种了**：一次提问，被选中的那几位**同时**听到同一句问题、
-**同时**开口、互相听不到这一轮的回答（并发跑）。原来还有"会议"那种按顺序说、
-后面的人听得到前面的——那套连同"圆桌"一起取消了（0.8.0）。
-
-**记录是每一位一说完就落盘的**，不是等整轮结束再统一写：
-用户看到一半关掉页面时，他刚才问的那句和已经答出来的那些必须留下。
-"""
+"""并发调用模型、推送流式回答并保存原文。"""
 
 from __future__ import annotations
 
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
 
-from . import context, memory, sessions, settings as settings_mod, store, templates
+from . import context, settings as settings_mod, store, templates
 from .adapters import AdapterError, stream_chat
-from .adapters.core import IDLE_MS
-from .life import Life, new_id, now_ms
+from .life import new_id, now_ms
+from .runtime import Runtime
 from .text import estimate_tokens
 
-# 思考吃光额度后重试时，输出上限最多提到这个数。
-# max_tokens 是**上限不是目标**，提高它不会让正常回答变长，
-# 只会让"想很久"的模型有机会说出正文。
-MAX_RETRY_CAP = 32768
-
-
-@dataclass
-class Round:
-    """一轮提问。事件流推给前端，answers 落进记录。"""
-
-    id: str
-    at: int
-    session_id: str
-    answers: list[dict] = field(default_factory=list)
-
-    def answer_of(self, seat_no: int) -> dict | None:
-        return next((a for a in self.answers if a["seatNo"] == seat_no), None)
-
-
-# ─────────────────────────── 黄条不复读 ───────────────────────────
-
-
-def _past_notices(life: Life, session_id: str) -> set[str]:
-    """这个会话里已经说过的提示。
-
-    去重的依据是**记录本身**（上一轮把 notices 存进了他的回答里），
-    所以不需要额外的状态文件；换一次会话仍然会重新说一次——新会话里它是新信息。
-    """
-    seen: set[str] = set()
-    for e in life.read_session(session_id, only_tail=True, warn=False):
-        for n in e.get("notices") or []:
-            seen.add(n)
-    return seen
-
-
-def _notices(seen: set[str], texts) -> list[str]:
-    """同一句话在这个会话里只说一次。第一次是信息，第二次是噪音。"""
-    out = []
-    for t in texts:
-        t = (t or "").strip()
-        if t and t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
-
-
-# ─────────────────────────── 主入口 ───────────────────────────
-
-
 def ask(data_dir, *, session_id: str, question: str, settings: dict, transport,
-        only_seat: int | None = None):
-    """问一句。**这是一个生成器**：边算边把事件吐出去。
-
-    用生成器而不是"先算完再返回"，是因为用户要边看边读——
-    几位同时出字，才看得出"一次提问、多位并排回答"。
-    """
-    session = sessions.load(data_dir, session_id)
-    if session is None:
-        raise AdapterError(404, f"找不到这次对话：{session_id}")
+        runtime: Runtime | None = None):
+    """并发生成回答，保存完成后推送完成事件。"""
+    runtime = runtime or Runtime(data_dir)
     question = (question or "").strip()
     if not question:
         raise AdapterError(400, "先写点什么再问")
-    seats = [s for s in session.ordered() if only_seat is None or s["seatNo"] == only_seat]
-    if not seats:
-        raise AdapterError(400, "还没选要问的人")
-
-    rnd = Round(id=new_id("r"), at=now_ms(), session_id=session_id)
-
-    lives: dict[int, Life] = {}
-    for seat in seats:
-        life = Life.load(data_dir / "humans" / seat["lifeId"])
-        if (life.root / "identity.json").exists():
-            lives[seat["seatNo"]] = life
-        else:
-            yield {"type": "error", "seatNo": seat["seatNo"],
-                   "message": f"选中的那位（{seat['lifeId']}）已经不在了"}
-
-    yield from _run_parallel(data_dir, session, seats, lives, question, rnd, settings, transport)
-
-    sessions.touch(data_dir, session_id)
-    # 答完了 → **在后台**看看该不该整理（压缩 + 提记忆）。
-    # 设计文档那条硬规矩的落点：请求路径永远不调模型做压缩。
-    schedule_housekeeping(data_dir, lives, session_id, settings, transport)
-    yield {"type": "round_done", "roundId": rnd.id, "at": rnd.at}
-
-
-# ═══════════════ 后台整理：他是在聊天里慢慢长出记忆的 ═══════════════
-#
-# 没有这一段，聊天记录就只是记录：聊得再久，旧的部分只会被**裁剪**掉
-# （裁剪是保底，不调模型、但也不留痕），长记忆永远不会自己长出来。
-# 有了它才是设计文档里那句话："压缩发生在两轮之间的空隙里"。
-#
-# 三条自律：
-#   · **不阻塞**：起一个守护线程，用户完全无感（答案早就推给他了）
-#   · **不静默**：整理的结果（压到哪儿、记住了什么）在"一生"那一页看得到，
-#     花的 token 也进账
-#   · **失败不吵**：这次没整理成就下次再试——原文永远在，整理是幂等的派生物
-
-
-def schedule_housekeeping(data_dir, lives: dict, session_id: str, settings: dict, transport) -> None:
-    """一轮答完之后，把这几位生命的"整理"丢到后台去。
-
-    一位生命一个任务、串行跑：一次可能问七位，要是并行发七次模型调用，
-    每轮结束都会有一次小高峰。串行慢一点，但花的是同一笔钱，而且安静。
-
-    **裸模型不整理**：设计文档说了它是对打的探针，不是陪伴，不积累记忆。
-    """
-    targets = []
-    for life in lives.values():
-        if _is_bare(data_dir, life):
-            continue
-        targets.append(life.id)
-    if not targets:
-        return
+    with runtime._guard:
+        session = runtime.sessions.get(session_id)
+        if session is None:
+            raise AdapterError(404, "这次对话已经删除")
+        seats = session.ordered()
+        if not seats:
+            raise AdapterError(400, "还没选要问的人")
+        lock = runtime.round_lock(session_id)
+        if not lock.acquire(blocking=False):
+            raise AdapterError(409, "这一轮仍在后台回答，请等它结束")
+    round_id, at = new_id("r"), now_ms()
+    lives = {}
+    try:
+        runtime.open_session(session_id)
+        lives = {s["seatNo"]: runtime.lives[s["lifeId"]] for s in seats if s["lifeId"] in runtime.lives}
+        if len(lives) != len(seats):
+            raise AdapterError(400, "有提问对象已被删除，请先移除再提问")
+        for life in lives.values():
+            life.active_rounds.add(round_id)
+        participants = []
+        for s in seats:
+            life = lives.get(s["seatNo"])
+            identity = life.identity if life else {}
+            participants.append({**s, "name": identity.get("name") or s["lifeId"],
+                                 "emoji": identity.get("emoji") or "🙂",
+                                 "providerId": s.get("providerId") or identity.get("providerId") or "",
+                                 "model": s.get("model") or identity.get("model") or ""})
+        runtime.write_message(session_id, {
+            "kind": "you", "text": question, "t": at, "roundId": round_id,
+            "messageId": round_id + "_you", "participants": participants,
+        })
+    except BaseException:
+        for life in lives.values():
+            life.active_rounds.discard(round_id)
+        lock.release()
+        raise
+    events = queue.Queue()
 
     def work():
-        for life_id in targets:
-            try:
-                run_housekeeping(data_dir, life_id, session_id, settings, transport)
-            except Exception as e:  # noqa: BLE001 —— 后台失败绝不能影响对话
-                print(f"[整理] {life_id}/{session_id} 这次没成：{type(e).__name__}：{e}")
+        try:
+            saved = True
+            for event in _run_parallel(session, participants, lives, question,
+                                       settings, transport, runtime, round_id):
+                saved = saved and not event.get("saveFailed")
+                events.put(event)
+            if saved:
+                events.put({"type": "round_done", "roundId": round_id, "at": at})
+        except Exception as e:
+            events.put({"type": "error", "message": f"本轮未完整保存：{e}"})
+        finally:
+            for life in lives.values():
+                life.active_rounds.discard(round_id)
+            lock.release()
+            events.put(None)
 
-    threading.Thread(target=work, daemon=True, name="digitallife-housekeeping").start()
-
-
-def _is_bare(data_dir, life) -> bool:
-    tpl = templates.load(data_dir, life.identity.get("templateId") or "")
-    return bool(tpl and tpl.bare)
-
-
-def housekeeping_budget(settings: dict, life) -> tuple[int, int, int]:
-    """算这位生命这次能用多少预算：`(窗口, 输出上限, 留给历史的额度)`。
-
-    和请求路径用的是**同一套算法**（`settings.resolve_*` + `context` 里那条预算线），
-    不然"水位线"两边对不上：前台以为还有余量、后台以为该压了。
-    """
-    provider = settings_mod.provider(settings, life.identity.get("providerId"))
-    model = life.identity.get("model") or ""
-    window = settings_mod.resolve_window(settings, model, (provider or {}).get("id", ""))
-    _, cap = settings_mod.resolve_output_cap(settings, model, window)
-    safety = max(1024, round(window.tokens * 0.1))
-    return window.tokens, cap, max(0, window.tokens - cap - safety)
+    # 协调线程持有本轮直到写入结束，浏览器断开不会释放锁或丢掉已经生成的回答。
+    threading.Thread(target=work, daemon=True, name="digitallife-round").start()
+    yield {"type": "round_start", "roundId": round_id, "at": at}
+    while (event := events.get()) is not None:
+        yield event
 
 
-def run_housekeeping(data_dir, life_id: str, session_id: str, settings: dict,
-                     transport) -> dict:
-    """真正的整理动作：该压就压，压过就顺手把新记住的事提出来。
-
-    返回做了什么（给测试和日志看）。**没到水位就什么都不做**，一次模型调用都不发。
-    """
-    life = Life.load(data_dir / "humans" / life_id)
-    if not (life.root / "identity.json").exists():
-        return {"skipped": "没有这位生命"}
-    provider = settings_mod.provider(settings, life.identity.get("providerId"))
-    if provider is None:
-        return {"skipped": "他绑的平台不在了"}  # 不抛错：这是后台，别吵
-
-    model = life.identity.get("model") or ""
-    window, cap, budget = housekeeping_budget(settings, life)
-    from .adapters import make_caller
-
-    caller = make_caller(provider, model=model, transport=transport, max_tokens=min(cap, 8192))
-    meta = memory.compress(life, session_id, caller=caller, model=model, budget=budget)
-    if not meta:
-        # 没到水位（或者原文还太少）：**不提取**。提取一次要一次调用，
-        # 而没压过的原文下一轮还会在，没必要现在花这笔钱。
-        return {"compaction": None}
-
-    res = memory.extract(life, session_id, caller=caller, model=model)
-    return {"compaction": meta, "extracted": [m.name for m in res.written],
-            "skipped": res.skipped_duplicate, "rejected": res.rejected}
-
-
-def _run_parallel(data_dir, session, seats, lives, question, rnd, settings, transport):
-    """一次提问：选中的几位**同时**听到同一句问题，互相听不到这一轮的回答。
-
-    真的并发跑，靠队列把字交错吐出来。并发是有必要的：几位串行跑，用户要等几倍时间；
-    而且"同时开口"本来就是这件事的观感。代价是要处理交错——所以每块都带 seatNo。
-    """
+def _run_parallel(session, seats, lives, question, settings, transport, runtime, round_id):
+    """用队列汇合各模型的并发事件，单个模型失败不影响其他回答。"""
     q: "queue.Queue[dict]" = queue.Queue()
     threads: list[threading.Thread] = []
     for seat in seats:
         life = lives.get(seat["seatNo"])
-        if life is None:
-            continue
-
         def work(seat=seat, life=life):
             try:
-                for evt in _run_seat(data_dir, session, seat, life, question, rnd, settings,
-                                     transport):
+                if life is None:
+                    raise AdapterError(404, f"选中的那位（{seat['lifeId']}）已经不在了")
+                for evt in _run_seat(session, seat, life, question, settings,
+                                     transport, runtime, round_id):
                     q.put(evt)
-            except Exception as e:  # noqa: BLE001 —— 一位炸了不能拖垮整轮
-                q.put({"type": "error", "seatNo": seat["seatNo"], "message": f"{type(e).__name__}：{e}"})
+            except OSError as e:
+                q.put({"type": "error", "seatNo": seat["seatNo"], "saveFailed": True,
+                       "message": f"保存失败，请检查磁盘与备份：{e}"})
+            except Exception as e:
+                failure = f"{type(e).__name__}：{e}"
+                answer = {**seat, "content": "", "error": failure}
+                try:
+                    _record_answer(runtime, session.id, round_id, answer)
+                    q.put({"type": "seat_done", **answer})
+                except OSError as saved:
+                    q.put({"type": "error", "seatNo": seat["seatNo"], "saveFailed": True,
+                           "message": f"{failure}；保存失败：{saved}"})
             finally:
                 q.put({"type": "_seat_end"})
 
@@ -239,38 +122,31 @@ def _run_parallel(data_dir, session, seats, lives, question, rnd, settings, tran
         yield evt
 
 
-def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dict,
-              transport):
-    """一位的一整次回答。产出事件，**结束时把这一轮记进他的记录**。"""
+def _run_seat(session, seat, life, question, settings: dict,
+              transport, runtime, round_id):
+    """生成一位的回答，保存成功后发出完成事件。问题已由主入口先行保存。"""
     seat_no = seat["seatNo"]
-    name = life.identity.get("name") or seat["lifeId"]
+    name = seat["name"]
     yield {"type": "seat_start", "seatNo": seat_no, "lifeId": life.id, "name": name}
 
     provider = settings_mod.provider(settings, seat.get("providerId") or life.identity.get("providerId"))
     if provider is None:
-        yield {"type": "error", "seatNo": seat_no,
-               "message": f"{name} 绑的那家平台不在了——去数字人库里给他换一家"}
-        return
+        raise AdapterError(400, f"{name} 绑定的平台不在了，请重新配置平台")
     model = seat.get("model") or life.identity.get("model") or ""
-    tpl = _template_for(data_dir, life)
-    window = settings_mod.resolve_window(settings, model, provider.get("id", ""))
-    wanted, cap = settings_mod.resolve_output_cap(settings, model, window)
-
-    built = context.build_context(
-        life,
-        session_id=session.id,
-        question=question,
-        window=window.tokens,
-        output_reserve=cap,
-        persona=tpl.system,
-        bare=tpl.bare,
+    tpl = runtime.templates.get(life.identity.get("templateId")) or templates.Template(
+        id="", name=name, system="",
     )
+    window = settings_mod.resolve_window(settings, model)
+    cap = settings_mod.resolve_output_cap(settings, model, window)
 
-    seen = _past_notices(life, session.id)
+    # 当前问题已保存；请求快照中排除它，再在末尾添加一次。
+    with store.lock_for(life.id):
+        history = [e for e in life.read_history() if e.get("roundId") != round_id]
+        built = context.build_context(
+            life, session_id=session.id, question=question, window=window,
+            output_reserve=cap, persona=tpl.system, bare=tpl.bare, history=history,
+        )
     notices: list[str] = []
-    for text in _notices(seen, built.notices):
-        notices.append(text)
-        yield {"type": "notice", "seatNo": seat_no, "text": text}
 
     started = time.time()
     content: list[str] = []
@@ -278,17 +154,6 @@ def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dic
     usage: dict = {}
     finish = ""
     failure = ""
-
-    def call(max_tokens: int):
-        return stream_chat(
-            provider, model=model,
-            system=built.system,
-            messages=built.messages,
-            temperature=seat.get("temperature"),
-            max_tokens=max_tokens,
-            timeout=IDLE_MS / 1000,
-            transport=transport,
-        )
 
     def consume(chunks):
         """把一条流读完，产出事件。返回时 content/reasoning/usage/finish 都已更新。"""
@@ -304,38 +169,26 @@ def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dic
             elif kind == "finish":
                 finish = chunk["reason"]
             elif kind == "notice":
-                for text in _notices(seen, [chunk["text"]]):
+                for text in [chunk["text"]]:
                     notices.append(text)
                     yield {"type": "notice", "seatNo": seat_no, "text": text}
                 continue
             elif kind == "limit":
-                for text in _notices(seen, [chunk["text"]]):
+                for text in [chunk["text"]]:
                     notices.append(text)
                     yield {**chunk, "seatNo": seat_no, "text": text}
                     # 平台说了它的上限 → 记下来，下次不再白挨一次 400
                     if chunk.get("max") and model:
-                        settings_mod.learn_model_limit(data_dir, settings, model, int(chunk["max"]))
+                        runtime.update_settings(model_info={model: {"maxOutput": int(chunk["max"])}})
                 continue
             if kind in ("text", "reasoning"):
                 yield {**chunk, "seatNo": seat_no}
 
     try:
-        yield from consume(call(cap))
-
-        # ── 思考把额度吃光、正文一个字都没轮到 → 提一档再试一次 ──
-        # 老项目那个"卡在思考中"就是这么修的。
-        if (not "".join(content).strip()) and "".join(reasoning).strip() and finish == "length":
-            bigger = min(max(cap * 2, 16384), MAX_RETRY_CAP, window.tokens)
-            if bigger > cap:
-                waste = usage.get("output") or estimate_tokens("".join(reasoning))
-                note = (f"这个模型把 {cap} token 的输出额度全用在思考上了，正文一个字都没轮到"
-                        f"——已自动提到 {bigger} 再试一次。（想省掉这次浪费约 {waste} token 的输出，"
-                        f"把「单次回答最长 token」调到 {bigger} 以上；你现在设的是 {wanted}）")
-                notices.append(note)
-                yield {"type": "notice", "seatNo": seat_no, "text": note}
-                content.clear()
-                reasoning.clear()
-                yield from consume(call(bigger))
+        yield from consume(stream_chat(
+            provider, model=model, system=built.system, messages=built.messages,
+            max_tokens=cap, transport=transport,
+        ))
     except AdapterError as e:
         failure = str(e)
     except Exception as e:  # noqa: BLE001
@@ -349,7 +202,7 @@ def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dic
     elif finish == "length" and text.strip():
         # 正文有，但答到一半被额度截断了：这个必须说，否则用户以为他说完了
         note = (f"正文被 {cap} token 的输出额度截断了，答到一半就没了"
-                f"——把「单次回答最长 token」调大（这个模型最多到 {window.tokens}）")
+                f"——可在设置文件中提高 maxTokens 或选择其他模型")
         if note not in notices:
             notices.append(note)
             yield {"type": "notice", "seatNo": seat_no, "text": note}
@@ -358,7 +211,9 @@ def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dic
         "seatNo": seat_no,
         "lifeId": life.id,
         "name": name,
+        "emoji": seat.get("emoji") or "🙂",
         "model": model,
+        "providerId": provider.get("id") or "",
         "content": text,
         "reasoning": think,
         "usage": usage,
@@ -367,49 +222,15 @@ def _run_seat(data_dir, session, seat, life, question, rnd: Round, settings: dic
         "ms": int((time.time() - started) * 1000),
         "error": failure,
         "notices": notices,
-        "window": window.tokens,
-        "windowSource": window.source,
-        "outputCap": cap,
-        "keptEntries": built.session_entries,
-        "droppedEntries": built.dropped,
     }
-    rnd.answers.append(answer)
     # **一说完就落盘**：用户中途关页面，已经答出来的这些也必须留下
-    _record_round(life, session, seat, question, rnd.at, answer)
+    _record_answer(runtime, session.id, round_id, answer)
     yield {"type": "seat_done", "seatNo": seat_no, **answer}
 
 
-def _template_for(data_dir, life) -> templates.Template:
-    tpl = templates.load(data_dir, life.identity.get("templateId") or "")
-    if tpl is None:
-        # 模板被删了：不能因此让他变成哑巴，用一个空人格（等于"没写人格"）
-        return templates.Template(id="", name=life.identity.get("name") or "他", system="")
-    return tpl
-
-
-def _record_round(life: Life, session, seat: dict, question: str, at: int,
-                  answer: dict) -> None:
-    """把这一轮记进他的记录：**你说了什么、他说了什么**。
-
-    时间是**原始时间戳**：提问用本轮开始的时间，他的回答用开始 + 他花了多久。
-    这样"记忆的年龄"才是真的。
-
-    并排作答里他听不到别人（各自独立），所以这里没有 `heard` 这一档。
-    老记录里可能还有（0.8.0 之前"会议"模式留下的，以及从老项目搬来的），
-    读的时候照旧认；这一版不再产生新的。
-    """
-    entries = [{"t": at, "kind": "you", "text": question}]
-    if answer.get("content"):
-        entries.append({
-            "t": at + int(answer.get("ms") or 0),
-            "kind": "self",
-            "text": answer["content"],
-            "reasoning": answer.get("reasoning") or "",
-            "tokens": answer.get("tokens", 0),
-            "model": answer.get("model", ""),
-            "finishReason": answer.get("finishReason", ""),
-            "notices": list(answer.get("notices") or []),
-        })
-    with store.lock_for(life.id):
-        for e in entries:
-            store.append_jsonl(life.session_path(session.id), e)
+def _record_answer(runtime, session_id, round_id, answer):
+    runtime.write_message(session_id, {
+        **{k: v for k, v in answer.items() if k != "content"},
+        "kind": "self", "text": answer.get("content", ""), "t": now_ms(),
+        "roundId": round_id, "messageId": f"{round_id}_{answer['lifeId']}",
+    })

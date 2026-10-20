@@ -1,15 +1,7 @@
-/**
- * 全局状态（Pinia）。
- *
- * 只放**跨页面要共享**的东西：启动数据、当前这次对话、几轮问答、正在流式的那一轮。
- * 单个页面自己的状态就留在那个组件里——不然这里会变成一个什么都塞的大口袋。
- *
- * 和上一版的区别：名单是**配置**（这次问哪几位），回答是**轮次**（一轮一轮往下堆）。
- * 老界面就是这么分的，也更好用：往上翻能看到之前问过什么、谁怎么答的。
- */
+/** 跨页面状态：启动数据、当前对话、提问对象与问答轮次。组件局部状态留在组件内。 */
 
 import { defineStore } from 'pinia'
-import { api, ask, type Advanced, type LifeSummary, type Provider, type ProviderPreset, type Seat, type Session, type StreamEvent, type Template } from './api'
+import { api, ask, API_VERSION, type LifeSummary, type Provider, type ProviderPreset, type Seat, type Session, type StreamEvent, type Template } from './api'
 
 /** 这次要问的一位。 */
 export interface SeatConfig {
@@ -18,7 +10,6 @@ export interface SeatConfig {
   name: string
   emoji: string
   model: string
-  providerLabel: string
 }
 
 /** 某一位在这一轮里的回答。 */
@@ -37,14 +28,11 @@ export interface AnswerView {
   tokens: number
   usage: { input?: number; output?: number }
   finishReason: string
-  window?: number
-  outputCap?: number
-  keptEntries?: number
-  droppedEntries?: number
 }
 
 /** 一轮对话。 */
 export interface RoundView {
+  id: string
   t: number
   question: string
   answers: AnswerView[]
@@ -59,13 +47,11 @@ export const useApp = defineStore('app', {
     dataDir: '',
     providers: [] as Provider[],
     providerPresets: [] as ProviderPreset[],
-    advanced: {} as Advanced,
     templates: [] as Template[],
     lives: [] as LifeSummary[],
     sessions: [] as Session[],
-    memTypes: ['user', 'self', 'feedback', 'reference'] as string[],
 
-    /** 老界面的三个视图，名字也照旧 */
+
     view: 'round' as 'round' | 'humans' | 'settings',
     currentSessionId: '' as string,
     question: '',
@@ -74,10 +60,13 @@ export const useApp = defineStore('app', {
     roundRunning: false,
     stopRound: null as null | (() => void),
     loading: false,
+    hasMoreRounds: false,
+    historyBefore: '',
+    historyRequest: 0,
+    streamRound: null as RoundView | null,
+    streamSessionId: '',
 
-    // 「记忆」「一生」是盖在页面上的弹窗，不是独立页面
-    modal: '' as '' | 'memory' | 'timeline' | 'life' | 'speaker',
-    modalLifeId: '',
+    modal: '' as '' | 'speaker',
     /** 加人弹窗编的是第几位（0 = 新加一位） */
     modalSeat: 0,
   }),
@@ -113,18 +102,16 @@ export const useApp = defineStore('app', {
   actions: {
     async boot() {
       try {
-        const health = await api.health()
-        this.version = health.version
-        this.dataVersion = health.dataVersion
-        this.dataDir = health.dataDir
         const b = await api.bootstrap()
+        if (b.apiVersion !== API_VERSION) throw new Error('接口版本已更新，请刷新页面')
+        this.version = b.version
+        this.dataVersion = b.dataVersion
+        this.dataDir = b.dataDir
         this.providers = b.settings.providers
         this.providerPresets = b.providerPresets ?? []
-        this.advanced = b.settings.advanced
         this.templates = b.templates
         this.lives = b.lives
         this.sessions = b.sessions
-        this.memTypes = b.memTypes
         this.ready = true
         this.problem = ''
         if (!this.currentSessionId && this.sessions.length) {
@@ -151,15 +138,13 @@ export const useApp = defineStore('app', {
       this.sessions = await api.sessions()
     },
 
-    openModal(kind: 'memory' | 'timeline' | 'life' | 'speaker', lifeId = '') {
+    openModal(kind: 'speaker', seat = '0') {
       this.modal = kind
-      this.modalLifeId = lifeId
       // 加人弹窗借用同一个参数传"第几位"（'0' = 新加一位）
-      this.modalSeat = kind === 'speaker' ? Number(lifeId) || 0 : 0
+      this.modalSeat = Number(seat) || 0
     },
     closeModal() {
       this.modal = ''
-      this.modalLifeId = ''
       this.modalSeat = 0
     },
 
@@ -195,12 +180,12 @@ export const useApp = defineStore('app', {
           name: life?.name ?? seat.lifeId,
           emoji: life?.emoji ?? '🙂',
           model: seat.model || life?.model || '',
-          providerLabel: this.providerById(life?.providerId ?? '')?.label ?? '',
         }
       })
     },
 
     async setSeats(next: Array<{ lifeId: string; model?: string }>) {
+      if (this.roundRunning) throw new Error('等这一轮回答结束后再调整提问对象')
       const session = await this.ensureSession()
       const seats: Seat[] = next.map((x, i) => {
         const life = this.lifeById(x.lifeId)
@@ -209,7 +194,6 @@ export const useApp = defineStore('app', {
           lifeId: x.lifeId,
           providerId: life?.providerId ?? '',
           model: x.model ?? life?.model ?? '',
-          temperature: null,
         }
       })
       const updated = await api.updateSession(session.id, { seats })
@@ -219,74 +203,49 @@ export const useApp = defineStore('app', {
 
     clearRound() {
       this.rounds = []
+      this.hasMoreRounds = false
+      this.historyBefore = ''
     },
 
-    /**
-     * 把这次对话最近几轮读回来。
-     *
-     * 一轮的"原文"分散在**每位生命各自的记录**里（他记的是自己亲历的），
-     * 所以这里按提问时间把它们拼回一轮一轮的样子——**对话只记问了谁，不记轮次**。
-     */
-    async loadRounds(limit = 3) {
-      const session = this.currentSession
-      if (!session?.seats.length) {
-        this.rounds = []
+    /** 直接读取会话原文分页；历史参与者和回答不依赖当前座位。 */
+    async loadRounds(limit = 3, older = false) {
+      const sessionId = this.currentSessionId
+      if (!sessionId) {
+        this.clearRound()
         return
       }
+      const request = ++this.historyRequest
       this.loading = true
       try {
-        const perSeat: Array<{ seat: Seat; entries: any[] }> = []
-        for (const seat of session.seats) {
-          try {
-            const got = await api.session(seat.lifeId, session.id, true)
-            perSeat.push({ seat, entries: got.entries ?? [] })
-          } catch {
-            perSeat.push({ seat, entries: [] })
+        const page = await api.sessionMessages(sessionId, limit, older ? this.historyBefore : '')
+        if (this.currentSessionId !== sessionId || request !== this.historyRequest) return
+        const loaded: RoundView[] = page.rounds.map((r) => ({
+          id: r.id, t: r.t, question: r.question,
+          answers: r.answers.map((a) => ({
+            seatNo: a.seatNo, lifeId: a.lifeId, name: a.name ?? a.lifeId,
+            emoji: a.emoji ?? '🙂', model: a.model ?? '', text: a.content ?? '',
+            reasoning: a.reasoning ?? '', notices: a.notices ?? [], error: a.error ?? '',
+            running: false, ms: a.ms ?? 0, tokens: a.tokens ?? 0, usage: a.usage ?? {},
+            finishReason: a.finishReason ?? '',
+          })),
+        }))
+        if (older) {
+          const existing = new Set(this.rounds.map((r) => r.id))
+          this.rounds = [...loaded.filter((r) => !existing.has(r.id)), ...this.rounds]
+        } else {
+          this.rounds = loaded
+          if (this.streamSessionId === sessionId && this.streamRound) {
+            const live = this.streamRound
+            this.rounds = this.rounds.filter((r) => r.id !== live.id)
+            this.rounds.push(live)
           }
         }
-        // 按提问时间分组：每条 you 的开头就是一轮
-        const byTime = new Map<number, RoundView>()
-        for (const { entries } of perSeat) {
-          for (const e of entries) {
-            if (e.kind === 'you' && !byTime.has(e.t)) {
-              byTime.set(e.t, { t: e.t, question: e.text ?? '', answers: [] })
-            }
-          }
-        }
-        const times = [...byTime.keys()].sort((a, b) => a - b)
-        for (const { seat, entries } of perSeat) {
-          const life = this.lifeById(seat.lifeId)
-          for (const e of entries) {
-            if (e.kind !== 'self') continue
-            // 他的回答归到"最近一次提问"那一轮
-            let t = times[0]
-            for (const x of times) if (x <= e.t) t = x
-            const rnd = byTime.get(t)
-            if (!rnd) continue
-            rnd.answers.push({
-              seatNo: seat.seatNo,
-              lifeId: seat.lifeId,
-              name: life?.name ?? seat.lifeId,
-              emoji: life?.emoji ?? '🙂',
-              model: e.model || seat.model || '',
-              text: e.text ?? '',
-              reasoning: e.reasoning ?? '',
-              notices: e.notices ?? [],
-              error: '',
-              running: false,
-              ms: 0,
-              tokens: e.tokens ?? 0,
-              usage: {},
-              finishReason: e.finishReason ?? '',
-            })
-          }
-        }
-        this.rounds = times
-          .slice(-limit)
-          .map((t) => byTime.get(t)!)
-          .map((r) => ({ ...r, answers: r.answers.sort((a, b) => a.seatNo - b.seatNo) }))
+        this.hasMoreRounds = page.hasMore
+        this.historyBefore = page.before
+      } catch (e) {
+        if (this.currentSessionId === sessionId) this.problem = e instanceof Error ? e.message : String(e)
       } finally {
-        this.loading = false
+        if (this.currentSessionId === sessionId && request === this.historyRequest) this.loading = false
       }
     },
 
@@ -296,6 +255,7 @@ export const useApp = defineStore('app', {
       if (!q || this.roundRunning || !this.seats.length) return
       const session = await this.ensureSession()
       const rnd: RoundView = {
+        id: '',
         t: Date.now(),
         question: q,
         answers: this.seats.map((s) => ({
@@ -316,16 +276,28 @@ export const useApp = defineStore('app', {
         })),
       }
       this.rounds = [...this.rounds, rnd]
+      const live = this.liveRound!
+      this.streamRound = live
+      this.streamSessionId = session.id
       this.roundRunning = true
       this.question = ''
-      const { done, stop } = ask({ sessionId: session.id, question: q }, (evt) => this.applyEvent(evt))
+      const { done, stop } = ask({ sessionId: session.id, question: q }, (evt) => this.applyEvent(evt, live))
       this.stopRound = stop
       try {
         await done
+      } catch (e) {
+        const message = e instanceof Error && e.name === 'AbortError'
+          ? '已停止接收回答'
+          : e instanceof Error ? e.message : String(e)
+        for (const answer of live.answers) {
+          if (answer.running) answer.error = message
+        }
       } finally {
         this.roundRunning = false
+        this.streamRound = null
+        this.streamSessionId = ''
         this.stopRound = null
-        for (const a of rnd.answers) {
+        for (const a of live.answers) {
           if (a.running) {
             a.running = false
             a.error = a.error || '这一轮没有正常收尾（可能是连接断了，或者你点了停）'
@@ -336,10 +308,12 @@ export const useApp = defineStore('app', {
       }
     },
 
-    applyEvent(evt: StreamEvent) {
-      const rnd = this.liveRound
+    applyEvent(evt: StreamEvent, rnd: RoundView | null) {
       const ans = rnd?.answers.find((a) => a.seatNo === evt.seatNo)
       switch (evt.type) {
+        case 'round_start':
+          if (rnd) { rnd.id = evt.roundId ?? rnd.id; rnd.t = evt.at ?? rnd.t }
+          break
         case 'seat_start':
           if (ans) {
             ans.running = true
@@ -366,10 +340,6 @@ export const useApp = defineStore('app', {
             ans.tokens = evt.tokens ?? 0
             ans.usage = evt.usage ?? {}
             ans.finishReason = evt.finishReason ?? ''
-            ans.window = evt.window
-            ans.outputCap = evt.outputCap
-            ans.keptEntries = evt.keptEntries
-            ans.droppedEntries = evt.droppedEntries
             ans.model = evt.model ?? ans.model
             if (evt.notices) for (const n of evt.notices) if (!ans.notices.includes(n)) ans.notices.push(n)
           }
@@ -379,7 +349,12 @@ export const useApp = defineStore('app', {
             ans.running = false
             ans.error = evt.message ?? '出错了'
           } else if (evt.message) {
-            this.problem = evt.message
+            for (const answer of rnd?.answers ?? []) {
+              if (answer.running) {
+                answer.error = evt.message
+                answer.running = false
+              }
+            }
           }
           break
         default:
@@ -389,7 +364,6 @@ export const useApp = defineStore('app', {
 
     stop() {
       this.stopRound?.()
-      this.roundRunning = false
     },
   },
 })

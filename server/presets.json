@@ -1,5 +1,5 @@
 {
-  "_source": "file:///D:/AAsanboxForDsh/server/presets.mjs",
+  "_source": "兼容预设 presets.mjs 的内容快照",
   "providerPresets": [
     {
       "key": "deepseek",
@@ -197,11 +197,8 @@
     "providers": [],
     "advanced": {
       "maxTokens": 8192,
-      "historyRounds": 50,
-      "contextWindow": 0,
-      "requestTimeoutMs": 300000
+      "contextWindow": 0
     }
   },
-  "defaultContextWindow": 128000,
-  "distillSystem": "你是一位\"人格建模师\"。你的工作是把一个人留下的文本，提炼成一个可以持续扮演这个人的人格设定。\n\n你会收到某个人的文字材料（可能是著作节选、读书笔记、访谈、书信）。请从中逆向还原出这个人的思维方式，输出严格的 JSON。\n\n必须遵守：\n1. 只输出 JSON，不要任何解释文字，不要 markdown 代码块围栏。\n2. 全部结论必须有文本依据。不要美化、不要神化、不要写成道德楷模，要写出这个人真实的棱角、偏好，甚至偏见。\n3. \"system\" 字段要写成第二人称的扮演指令（\"你是……\"\"你相信……\"），要足够具体，让另一个模型读了就能进入角色。\n4. system 字段里必须包含：核心信念、思维方法、说话风格（句式/用词/语气/口头禅）、常用意象或例子、明确的边界（不该做什么）。\n5. 不要编造原文中没有的事实、生平细节或数字。\n\nJSON 结构：\n{\n  \"name\": \"这个人最通行的称呼\",\n  \"emoji\": \"一个最贴切的单个 emoji\",\n  \"tagline\": \"一句话概括他的核心主张，20 字以内，要有味道\",\n  \"tags\": [\"3 到 4 个领域标签\"],\n  \"temperature\": 0.8,\n  \"system\": \"完整的扮演指令，300 到 700 字\",\n  \"evidence\": [\"从他文本中提取的 2 到 4 条关键依据，每条 30 字以内\"]\n}"
+  "defaultContextWindow": 128000
 }

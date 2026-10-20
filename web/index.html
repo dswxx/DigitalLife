@@ -4,10 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数字生命 · AI 数字人</title>
-    <!--
-      尽早套用上次选的配色，避免刷新时先闪一下默认色（老界面就是这么做的）。
-      五套配色在 styles/old-app.css 里：纸白 / 米黄 / 雾蓝 / 抹茶 / 墨夜。
-    -->
     <script>
       try {
         var savedTheme = localStorage.getItem('digitallife.theme')
@@ -16,14 +12,7 @@
         /* 隐私模式下 localStorage 可能不可用，忽略即可 */
       }
     </script>
-    <!--
-      这一行是**启动数据占位符**：服务端每次启动时把 /*__DL_BOOT__*/ 换成
-      {"apiVersion":…,"token":"…"}。令牌是每次启动随机生成的，不可能打进前端产物里。
-
-      注意占位符**必须顶替整个值**（所以后面跟一个 null 只是为了让这个文件本身
-      也是合法 JS）。写成 `= {/*__DL_BOOT__*/}` 的话，替换完会变成 `={{…}}`——
-      双层花括号，整段脚本直接语法错误，前端连不上后端。
-    -->
+    <!-- 整个占位值由服务端替换，HTML 禁止缓存。 -->
     <script>
       window.__DL_BOOT__ = /*__DL_BOOT__*/null;
     </script>

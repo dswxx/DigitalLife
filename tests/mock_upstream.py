@@ -1,16 +1,4 @@
-"""假上游：一个**真的 HTTP 服务**，说 OpenAI 兼容的 SSE。
-
-    py -3 dev/mock_upstream.py 8765
-
-为什么要真的起服务、而不是塞一个假的 transport：
-只有真的走一遍 socket，才能验到 `HttpxTransport`（整个后端里唯一没法离线测的一层），
-以及"分块到达"这件事本身。
-
-它按**固定字节数**把整条流切开发送，所以切点会落在中文的 UTF-8 字符中间——
-这正是 `sse.iter_sse_data` 用增量解码器要对付的情况。假 transport 很难造出这种切法。
-
-它还会记录收到的请求，测试可以回头查"我们到底发了什么"（比如温度有没有被摘掉）。
-"""
+"""测试用本机 HTTP 上游，支持脚本化响应、SSE 分块与请求记录。"""
 
 from __future__ import annotations
 
@@ -80,9 +68,6 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── 按剧本先失败：验"能自愈的报错" ──
         reject = script.get("reject_keys") or []
-        if "temperature" in body and "temperature" in reject:
-            self._json(400, {"error": {"message": "temperature is not supported for this model"}})
-            return
         if "max_tokens" in reject and (body.get("max_tokens") or 0) > int(script.get("max_ok") or 8192):
             self._json(400, {"error": {"message":
                 f"Invalid max_tokens value, the valid range of max_tokens is [1, {script.get('max_ok', 8192)}]"}})
@@ -94,23 +79,6 @@ class Handler(BaseHTTPRequestHandler):
         text = script.get("text") or f"（{model} 的回答）"
         reasoning = script.get("reasoning") or ""
         finish = script.get("finish") or "stop"
-
-        # 压缩和提取记忆用的是同一个模型、不同的提示词。
-        # 按提示词分辨一下，好让测试能同时验这两条路径。
-        system_text = ""
-        for m in body.get("messages") or []:
-            if m.get("role") == "system":
-                system_text = m.get("content") or ""
-                break
-        if "值得长期记住" in system_text and script.get("extract_text"):
-            text = script["extract_text"]
-
-        # "第一次只思考、一个字正文都没有" —— 推理模型把输出额度吃光就是这个样子。
-        # 用来验我们会不会自动把额度提高再试一次。
-        if script.get("reasoning_first"):
-            attempts = sum(1 for r in REQUESTS if r["body"].get("model") == model)
-            if attempts == 1:
-                text, reasoning, finish = "", script.get("reasoning") or "想了很久很久", "length"
 
         # 先把**整条流**拼成字节，再按固定块长发出去。
         # 切点于是会落在 JSON 里中文的 UTF-8 字节中间——真实网络里就是这样。

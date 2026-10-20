@@ -1,15 +1,5 @@
 <script setup lang="ts">
-/**
- * 数字人库。**骨架照老界面**：
- *
- *   .page-head        标题 + 一句话说明
- *   .row.wrap         一排按钮
- *   .category-block*  一家一个方块（.category-head + .grid-cards）
- *     .human-card     emoji + 名字 + 来源 + 一句话 + 标签 + 一排小按钮
- *
- * 多出来的是"蓝图 → 个体"这一层：最先一个方块放**人格蓝图**（不绑厂商、没有记忆），
- * 后面的方块按厂商放**活着的个体**。所以个体卡上多一行"← 哪份蓝图"。
- */
+/** 人格蓝图、普通 AI 与数字人的管理入口，个体按平台分组。 */
 import { computed, ref } from 'vue'
 import { api } from '../api'
 import { useApp } from '../store'
@@ -18,12 +8,23 @@ import CreateWizard from '../components/CreateWizard.vue'
 const app = useApp()
 
 const wizard = ref(false)
+const initialTemplateId = ref('')
 const editing = ref<null | { id: string; name: string; emoji: string; tagline: string; system: string; bare: boolean }>(null)
 const problem = ref('')
 const confirmDel = ref('')
 
 const groups = computed(() => app.livesByProvider)
 const totalLives = computed(() => app.lives.length)
+
+function createFrom(templateId = '') {
+  initialTemplateId.value = templateId
+  wizard.value = true
+}
+
+function addModel() {
+  const bare = app.templates.find((template) => template.bare)
+  createFrom(bare?.id ?? '')
+}
 
 function when(ms: number): string {
   if (!ms) return '还没聊过'
@@ -100,12 +101,13 @@ async function removeTemplate(id: string) {
         <h1>数字人库</h1>
         <p>
           {{ app.templates.length }} 份人格蓝图，{{ totalLives }} 位活着的数字人，分属
-          {{ groups.length }} 个平台。蓝图不绑厂商、没有记忆；用它创建出来的才是会积累记忆的个体。
+          {{ groups.length }} 个平台。可以直接比较不同 AI 的回答，也可以与带有人格和对话历史的数字人交流。
         </p>
       </div>
 
       <div class="row wrap" style="margin-bottom: 18px">
-        <button class="btn primary" @click="wizard = true">＋ 新建数字人</button>
+        <button class="btn primary" @click="createFrom()">＋ 新建数字人</button>
+        <button class="btn" @click="addModel">＋ 添加 AI 模型</button>
         <button class="btn" @click="app.go('round')">去一问多答</button>
       </div>
 
@@ -119,7 +121,7 @@ async function removeTemplate(id: string) {
           <span class="pill">不绑厂商 · 没有记忆</span>
           <span class="pill">{{ app.templates.length }} 份</span>
           <div style="flex: 1"></div>
-          <button class="btn tiny" @click="wizard = true">＋ 新建</button>
+          <button class="btn tiny" @click="createFrom()">＋ 新建</button>
         </div>
         <div class="grid-cards">
           <div
@@ -147,7 +149,7 @@ async function removeTemplate(id: string) {
             </div>
             <div class="pc-actions">
               <button class="btn tiny" @click.stop="editing = { ...t }">编辑</button>
-              <button class="btn tiny" @click.stop="wizard = true">用它新建</button>
+              <button class="btn tiny" @click.stop="createFrom(t.id)">用它新建</button>
             </div>
           </div>
         </div>
@@ -162,7 +164,7 @@ async function removeTemplate(id: string) {
           </span>
           <span class="pill">{{ g.lives.length }} 位</span>
           <div style="flex: 1"></div>
-          <button class="btn tiny" @click="wizard = true">＋ 新建</button>
+          <button class="btn tiny" @click="createFrom()">＋ 新建</button>
         </div>
         <div v-if="!g.lives.length" class="hint" style="padding: 15px">
           这家平台上还没有数字人。点右边「＋ 新建」从他的一份蓝图开始。
@@ -177,20 +179,17 @@ async function removeTemplate(id: string) {
               </div>
             </div>
             <div class="pc-tag">
-              聊过 {{ l.sessionCount }} 次 · 记 {{ l.memoryCount }} 条 · {{ when(l.lastTalkedAt) }}
+              {{ when(l.lastTalkedAt) }}
             </div>
             <div class="pc-tags">
-              <span v-if="l.templateBare" class="pill">裸模型</span>
-              <span v-for="tag in ['记忆独立']" :key="tag" class="pill">{{ tag }}</span>
+              <span class="pill">{{ l.templateBare ? '普通 AI · 本次对话' : '历史独立' }}</span>
             </div>
             <div class="pc-actions">
               <button class="btn tiny" @click="chatWith(l.id)">聊</button>
-              <button class="btn tiny" @click="app.openModal('memory', l.id)">记忆</button>
-              <button class="btn tiny" @click="app.openModal('timeline', l.id)">一生</button>
               <button
                 v-if="confirmDel !== l.id"
                 class="btn tiny"
-                title="删掉他（连同他的记忆）"
+                title="将这位数字人移入回收目录"
                 @click="confirmDel = l.id"
               >
                 ✕
@@ -209,7 +208,7 @@ async function removeTemplate(id: string) {
     </div>
   </div>
 
-  <!-- ── 蓝图编辑（老界面的弹窗样式）── -->
+
   <div v-if="editing" class="modal-mask" @click.self="editing = null">
     <div class="modal">
       <div class="modal-head">
@@ -238,11 +237,10 @@ async function removeTemplate(id: string) {
         </div>
         <label class="check-row">
           <input type="checkbox" v-model="editing.bare" />
-          <span>纯基线：请求里一个 system 字段都不发（连时间感和记忆也不注入）</span>
+          <span>普通 AI：保留本次对话，不加载人格或其他会话的记录</span>
         </label>
         <p class="field hint">
-          改了内容会生成新的蓝图（id 由名字 + 正文算出来），用着它的
-          {{ app.templateUsage(editing.id) }} 位会**自动跟着走**；旧文件会删掉，不会留两份。
+          保存后，使用这份人格的 {{ app.templateUsage(editing.id) }} 位数字人都会采用新内容。
         </p>
       </div>
       <div class="modal-foot">
@@ -254,5 +252,5 @@ async function removeTemplate(id: string) {
     </div>
   </div>
 
-  <CreateWizard v-if="wizard" @close="wizard = false" @created="chatWith" />
+  <CreateWizard v-if="wizard" :template-id="initialTemplateId" @close="wizard = false" @created="chatWith" />
 </template>

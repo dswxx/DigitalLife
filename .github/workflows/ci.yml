@@ -1,16 +1,3 @@
-# 每次都跑：后端九套 + 前端构建与类型检查 + 密钥扫描
-#
-# 这套配置是照着老项目（Node 版）的 CI 改的，两条规矩原样带过来：
-#   1. **data/ 永远不许进版本库**——那里有 API Key 明文，而且是用户的数字人资产
-#   2. **粗扫疑似真实密钥**（形如 sk-xxxxx 的长串）
-#
-# 界面的真浏览器那套（dev/test_ui.py）也在跑：ubuntu runner 自带 Chrome，
-# 我们用调试端口起一个 headless 的，再用 CDP 连上去。
-#
-# ⚠️ 这份 YAML **没有在真的 GitHub runner 上跑过**（开发环境里没有 GitHub）。
-# 里面每个命令都在本地原样跑通并通过了，但第一次上 CI 时请留意有没有环境差异
-# （最可能出问题的是 Chrome 的路径和 --no-sandbox）。
-
 name: 自测
 
 on:
@@ -36,23 +23,8 @@ jobs:
       - name: 装依赖
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
-      # 前八套不需要联网、不需要浏览器，装了那三个依赖就能全跑
-      - name: 落盘 / 生命 / 上下文 / 记忆递减
-        run: python dev/selftest.py
-      - name: 预设提示词与老项目逐字一致
-        run: python dev/check_presets.py
-      - name: 文档和代码对得上吗
-        run: python dev/test_docs.py
-      - name: 迁移（含"老目录一个字节没变"）
-        run: python dev/test_migrate.py
-      - name: 上下文组装（真实生命 × 各种窗口）
-        run: python dev/test_context.py
-      - name: 压缩（水位线 / 推水位 / 坏模型）
-        run: python dev/test_memory.py
-      - name: 长期记忆（提取与召回）
-        run: python dev/test_longterm.py
-      - name: 适配器（两种协议的组装与解析）
-        run: python dev/test_adapters.py
+      - name: 单元与文档回归
+        run: python scripts/check.py --unit
 
   end-to-end:
     name: 端到端（真起服务 + 真流式）
@@ -65,7 +37,7 @@ jobs:
       - name: 装依赖
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
       - name: 假上游 + 数字生命后端，走真 socket
-        run: python dev/test_http.py
+        run: python tests/test_http.py
 
   frontend:
     name: 前端（Node ${{ matrix.node }}）
@@ -130,7 +102,7 @@ jobs:
           done
 
       - name: 真浏览器验收
-        run: python dev/test_ui.py --cdp-port 9333
+        run: python tests/test_ui.py --cdp-port 9333
 
   scan:
     name: 密钥泄漏扫描
@@ -151,7 +123,7 @@ jobs:
       - name: 确认密钥不会被提交
         run: |
           # 扫出形如 sk-xxxxx 的长串（排除测试里用的假 Key 和文档）
-          if git grep -nEI 'sk-[A-Za-z0-9_-]{24,}' -- . ':!dev' ':!*.md' ':!web'; then
+          if git grep -nEI 'sk-[A-Za-z0-9_-]{24,}' -- . ':!tests' ':!*.md' ':!web'; then
             echo "::error::源码里出现疑似真实 API Key"
             exit 1
           fi

@@ -1,9 +1,9 @@
 {
   "name": "digitallife-web",
-  "version": "0.8.2",
+  "version": "0.12.0",
   "private": true,
   "type": "module",
-  "description": "数字生命的前端：数字人库、圆桌对话、记忆编辑器、一生时间线",
+  "description": "一次提问比较多个 AI，也可以与有独立记忆的数字人交流",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

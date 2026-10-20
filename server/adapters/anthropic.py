@@ -1,28 +1,19 @@
-"""Anthropic Messages 协议。
-
-和 OpenAI 那一套的差别（都是必须处理对的）：
-  · 人格走顶层 `system` 字段，**不是** messages 里的一条
-  · 认证头是 `x-api-key` + `anthropic-version`，不是 `Authorization: Bearer`
-  · `max_tokens` 是**必填**，而且温度上限是 1
-  · 流式事件分得很细：`content_block_delta` / `message_delta` / `message_start` / `error`
-  · 结束原因是 `stop_reason`，`max_tokens` 要映射成我们统一的 `length`
-"""
+"""Anthropic Messages 协议的请求组装与流式事件解析。"""
 
 from __future__ import annotations
 
 import json
 
-from .core import DEFAULT_MAX_TOKENS, StreamPlan, endpoint, temperature_field
+from .core import DEFAULT_MAX_TOKENS, StreamPlan, endpoint
 
 ANTHROPIC_VERSION = "2023-06-01"
 
 
 def build_plan(provider: dict, *, model: str, system: str | None, messages: list[dict],
-               temperature=None, max_tokens: int = DEFAULT_MAX_TOKENS) -> StreamPlan:
+               max_tokens: int = DEFAULT_MAX_TOKENS) -> StreamPlan:
     body = {
         "model": model,
         "max_tokens": max_tokens,
-        **temperature_field(temperature, cap=1),
         "stream": True,
         **({"system": system} if system else {}),
         "messages": [{"role": m["role"], "content": m["content"]} for m in messages],

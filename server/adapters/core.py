@@ -1,20 +1,4 @@
-"""适配器的公共部分：错误文案、URL 组装、重试策略、传输层接口。
-
-这些行为几乎全部是**老项目踩过坑之后写下来的**，换栈时必须一起带过来
-（"技术栈会换，产品特性不能消失"）：
-
-  · 平台报错要翻成人话，而且 **400 必须看着报错内容分派**——
-    以前不管什么 400 都说"上下文撑爆了"，结果 max_tokens 填超范围时
-    把人往"调小记忆轮数"上引，方向完全错了
-  · **模型不接受自定义温度** → 摘掉 temperature 重试，并告诉用户
-  · **max_tokens 超出该模型范围** → 按平台自己说的上限改小重试，
-    并把学到的值交回上层存下来（下次不用再白挨一个 400）
-  · 连接开着却长时间一个字节都不来 → 当作卡住，明确失败
-    （否则界面上就是"永远在思考"，用户只能猜）
-
-传输层是**注入**的（`Transport`），所以上面这些逻辑全部可以离线测：
-假传输按剧本返回 400 → 重发 → 200，断言重试后的请求体长什么样。
-"""
+"""协议共用的 URL 校验、错误翻译、参数重试与传输契约。"""
 
 from __future__ import annotations
 
@@ -26,8 +10,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-# 连接开着却一个字节都不来，等多久算卡住。
-# 90 秒是老的默认值；测试里用环境变量调小，不然一个测试要等一分半。
+# 上游连续无输出的超时，单位为毫秒。
 IDLE_MS = int(os.environ.get("DL_IDLE_MS") or 90_000)
 
 DEFAULT_MAX_TOKENS = 4096
@@ -36,10 +19,9 @@ DEFAULT_MAX_TOKENS = 4096
 class AdapterError(RuntimeError):
     """一次上游调用失败。`status` 是我们自己给的语义码（不是平台的原文）。"""
 
-    def __init__(self, status: int, message: str, *, retryable: bool = False):
+    def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
-        self.retryable = retryable
 
 
 # ─────────────────────────── URL ───────────────────────────
@@ -114,16 +96,16 @@ def friendly_http_error(status: int, body: str, provider: dict) -> str:
     hint400 = "请求被拒"
     if re.search(r"max_?tokens|output tokens", detail, re.I):
         hint400 = ("这个模型的输出上限不接受这个值——看下面平台给的范围，"
-                   "去「高级设置」把「单次回答最长 token」改小")
+                   "请在 settings.json 中调小 maxTokens")
     elif re.search(r"context|too long|length|token", detail, re.I):
-        hint400 = "这一位把上下文撑爆了——去「高级设置」调小记忆轮数，或少问几位"
+        hint400 = "请求超过模型上下文窗口，请缩短问题或选择更大窗口的模型"
 
     hints = {
         401: "API Key 无效或已过期",
         402: "账户余额不足",
         403: "权限不足，或该 Key 无权访问此模型",
         404: "模型名或 Base URL 不对",
-        413: "请求体太大，多半是上下文超了——调小记忆轮数或少问几位",
+        413: "请求体过大，请缩短问题或选择更大窗口的模型",
         429: "触发限流或配额用尽，稍后再试",
         500: "平台内部错误",
         503: "平台暂时不可用（常见于高峰期）",
@@ -159,28 +141,8 @@ def parse_max_tokens_limit(text: str) -> int:
     return 0
 
 
-def temperature_field(t, cap=None) -> dict:
-    """组装 temperature 字段。
-
-    **不传 = 不发这个字段**，交给平台用默认值。有些模型只接受固定温度
-    （Kimi k2、OpenAI o 系列、部分推理模型），传任何别的值都会被 400 拒绝。
-    """
-    if t is None:
-        return {}
-    try:
-        n = float(t)
-    except (TypeError, ValueError):
-        return {}
-    return {"temperature": n if cap is None else min(n, cap)}
-
-
-# ─────────────────────────── 传输层 ───────────────────────────
-
-
 @dataclass
 class Opened:
-    """一次上游响应的开口。"""
-
     status: int
     chunks: Iterator[bytes] = field(default_factory=lambda: iter(()))
     error_text: str = ""
@@ -212,12 +174,8 @@ class StreamPlan:
 
 
 def post_stream(transport: Transport, plan: StreamPlan, provider: dict, *, timeout: float) -> tuple[Opened, dict]:
-    """发流式请求，并兜住两类"能自愈"的报错。
-
-    返回 `(响应, 说明)`，说明里有 `droppedTemperature` / `limitedMaxTokens`，
-    交给上层**明确告诉用户**——不静默换掉他的设置。
-    """
-    notes = {"droppedTemperature": False, "limitedMaxTokens": 0}
+    """发送流式请求；平台拒绝输出额度时按其限制重试。"""
+    notes = {"limitedMaxTokens": 0}
     opened = _send(transport, plan, timeout)
     if opened.ok:
         return opened, notes
@@ -225,16 +183,6 @@ def post_stream(transport: Transport, plan: StreamPlan, provider: dict, *, timeo
     error_text = opened.error_text
     retryable = opened.status in (400, 422)
 
-    # 1) 温度不被接受 → 摘掉重试
-    if retryable and "temperature" in plan.body and re.search(r"temperature", error_text, re.I):
-        retry = StreamPlan(plan.url, plan.headers, {k: v for k, v in plan.body.items() if k != "temperature"}, plan.kind)
-        second = _send(transport, retry, timeout)
-        if second.ok:
-            notes["droppedTemperature"] = True
-            return second, notes
-        raise AdapterError(second.status, friendly_http_error(second.status, second.error_text, provider))
-
-    # 2) 输出上限不被接受 → 按平台说的改小重试
     if retryable and "max_tokens" in plan.body and re.search(r"max_?tokens|output tokens", error_text, re.I):
         current = plan.body["max_tokens"]
         said = parse_max_tokens_limit(error_text)

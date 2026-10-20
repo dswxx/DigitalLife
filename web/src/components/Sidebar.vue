@@ -1,11 +1,5 @@
 <script setup lang="ts">
-/**
- * 左侧栏。**结构和老界面一模一样**（品牌 / 新建对话 / 对话列表 / 三个导航 / 配色），
- * 只是把"数字人"这层的名字换成了新产品的说法：
- *
- *   老：圆桌 · 数字人库 · 模型与密钥
- *   新：一问多答 · 数字人库 · 模型与密钥   ← 第一项改名：圆桌那套取消了
- */
+/** 侧栏导航、对话列表与主题选择。 */
 import { computed, ref } from 'vue'
 import { api } from '../api'
 import { useApp } from '../store'
@@ -13,8 +7,7 @@ import { useApp } from '../store'
 const app = useApp()
 const confirmDel = ref('')
 
-/** 五套配色。**圆点颜色要内联写**——老界面的 CSS 只画了圆点的形状，
- *  颜色是每个主题自己的主色（老界面也是内联放的）。 */
+
 const THEMES = [
   { id: 'paper', name: '纸白', desc: '经典白底黑字', ring: '#4a6fd0', fill: '#f5f4f1' },
   { id: 'sepia', name: '米黄', desc: '护眼暖色，像看纸质书', ring: '#a2621f', fill: '#f5eddc' },
@@ -50,7 +43,7 @@ function ago(ms: number): string {
 
 async function newTalk() {
   const created = await api.createSession({ title: '新的对话', seats: [] })
-  app.sessions = [created as any, ...app.sessions]
+  app.sessions = [created, ...app.sessions]
   app.currentSessionId = created.id
   app.syncSeatsFromSession()
   app.clearRound()
@@ -73,6 +66,7 @@ async function delTalk(id: string) {
     app.currentSessionId = app.sessions[0]?.id ?? ''
     app.syncSeatsFromSession()
     app.clearRound()
+    await app.loadRounds()
   }
 }
 </script>
@@ -101,7 +95,7 @@ async function delTalk(id: string) {
       >
         <div class="ti-title">{{ s.title || '新的对话' }}</div>
         <div class="ti-sub">
-          {{ (s as any).rounds ?? 0 }} 轮 · {{ (s as any).seatCount ?? s.seats.length }} 位 ·
+          {{ s.rounds ?? 0 }} 轮 · {{ s.seatCount ?? s.seats.length }} 位 ·
           {{ ago(s.updatedAt) }}
         </div>
         <button

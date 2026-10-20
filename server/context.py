@@ -1,289 +1,59 @@
-"""组装一次请求的 system / messages。
+"""将人格、历史原文和当前问题组装成一次模型请求。"""
 
-这是**框架版**：把四档记忆递减和预算裁剪的骨架搭起来，
-记忆内容的精细编排（摘要怎么写、召回怎么挑、压缩提示词怎么设计）留到后面迭代。
-
-一次请求里到底放什么（参考材料里的核心一问）：
-
-    system  = 人格 + 时间感 + 长期记忆目录 + 更早会话的一行摘要
-    messages= 本次会话的近期原文 + 本轮问题
-
-**硬约束**：这里只做**确定性裁剪**，绝不调用模型做压缩。
-压缩发生在两轮之间的空隙里（见设计文档）。请求路径一旦要调模型，
-响应就会多几秒、还可能失败——"用户无感"就没了。
-"""
-
-from __future__ import annotations
-
-import time
 from dataclasses import dataclass
 
-from . import memory
-from .life import KIND_HEARD, KIND_SELF, KIND_SUMMARY, KIND_YOU, Life
-from .text import estimate_tokens, fmt_clock, fmt_day, human_ago
-
-__all__ = ["Built", "build_context", "estimate_tokens", "fmt_clock", "fmt_day", "human_ago"]
+from .settings import history_budget
+from .text import estimate_tokens
 
 
 @dataclass
 class Built:
-    """组装结果 + 账。账要能看见，否则越老的生命越贵而用户不知道。"""
-
     system: str | None
     messages: list[dict]
-    estimated_input: int
-    session_entries: int  # 本次会话原文带了几条
-    older_summaries: int  # 带了几条更早会话的摘要
-    memory_lines: int  # 目录带了几行
-    dropped: int  # 因为预算丢掉了几条原文
-    budget: int
-    # 真正装进去的那些历史消息（合并前的原样，按时间顺序）。
-    # 有了它，「账」就是可审计的：不信 session_entries 的话直接数这个列表。
-    # 它不参与合并——合并会改变条数，那就没法用条数对账了。
-    history: list[dict]
-    # 这次会话较早的部分是不是已经压成摘要了（界面要显示"已整理"）
-    compacted: bool
-    # 长期记忆里召回了哪几条（带正文的那一档）
-    recalled: int
-    # 需要告诉用户的事（**同一件事只说一次**的去重放在上层）。
-    # 这里只会有一件：他这次说的话没被完整读到——这是唯一必须告诉用户的情况，
-    # 因为它意味着模型的回答建立在一段被掐掉中间的内容上，而用户不知道。
-    notices: list[str]
 
 
-def build_context(
-    life: Life,
-    *,
-    session_id: str,
-    question: str,
-    window: int,
-    output_reserve: int = 8192,
-    persona: str | None = None,
-    bare: bool = False,
-    safety_ratio: float = 0.1,
-) -> Built:
-    """把一个生命"此刻能想起的东西"组装成一次请求。
-
-    window        —— 这个模型的上下文窗口（优先用平台报的，见 resolve_window）
-    output_reserve—— 给输出预留的额度（推理模型的思考也算在这里）
-    persona       —— 人格模板的 system；None 表示这个模板没有写人格
-    bare          —— **纯基线**：整个 system 字段都不发，时间感和记忆也不注入
-
-    bare 这条是从老项目继承的产品承诺：「裸模型」要能看出"模型本身"的原样回答。
-    所以它不是"发个空的 system"，而是**压根不构造**——连时间感和记忆目录都不加。
-    代价是这类生命不积累记忆（它是用来对打的探针，不是用来陪伴的）。
-
-    并排作答是**各自独立**的：他听不到同一次提问里别人的回答，
-    所以这里没有"本轮此前已发言的人"那一档。
-    """
+def build_context(life, *, session_id: str, question: str, window: int,
+                  output_reserve: int = 8192, persona: str = "", bare: bool = False,
+                  history: list[dict] | None = None) -> Built:
+    system = None if bare else persona or None
+    source = life.read_history() if history is None else history
     if bare:
-        return Built(
-            system=None,
-            messages=[{"role": "user", "content": question}],
-            estimated_input=estimate_tokens(question),
-            session_entries=0,
-            older_summaries=0,
-            memory_lines=0,
-            dropped=0,
-            budget=window,
-            history=[],
-            compacted=False,
-            recalled=0,
-            notices=[],
-        )
-
-    safety = max(1024, round(window * safety_ratio))
-
-    # 只读水位线之后的原文：更老的部分已经压成摘要了（下面那段），
-    # 再解析一遍纯属浪费，而且会让"越老的生命越慢"。
-    # 先读，是因为拼 system 时要用到"最近几轮他说了什么"来做召回。
-    entries = [e for e in life.read_session(session_id, only_tail=True)
-               if e.get("kind") != KIND_SUMMARY]
-
-    # ── system：时间感 + 本会话较早部分的摘要 + 记忆目录 + 召回的正文 + 更早会话的一行 ──
-    now = int(time.time() * 1000)
-    sys_parts: list[str] = []
-    if persona:
-        sys_parts.append(persona)
-    sys_parts.append(
-        f"【现在】{fmt_day(now)} {fmt_clock(now)}\n"
-        f"【你上次和他说话】{human_ago(_last_talked(life, session_id))}"
-    )
-
-    # 本会话较早的部分：已经压成摘要的那一段。
-    # 放在 system 里而不是当成一条假的历史消息——它不是一轮真实的对话，
-    # 混进 messages 会让模型分不清那是谁说的，也会给 user/assistant 交替添麻烦。
-    own_summary = life.summary_text(session_id)
-    if own_summary:
-        sys_parts.append("【这次对话更早的部分，你只记得这些】\n" + own_summary)
-
-    older = life.summaries(exclude_session=session_id)
-    if older:
-        lines = [f"· {fmt_day(s['t'])} {fmt_clock(s['t'])}：{s['text']}" for s in older[:20]]
-        sys_parts.append("【更早的对话，你只记得这些】\n" + "\n".join(lines))
-
-    index = life.index_text().strip()
-    memory_lines = len([x for x in index.splitlines() if x.strip()])
-    if index:
-        sys_parts.append("【你记得的事】\n" + index)
-
-    # 召回：从长期记忆里挑出和这一次有关的，带上正文。
-    # **纯机械检索，不调模型**（关键词 + 时间衰减）——多一次调用就是每次对话都多花钱。
-    # 放在目录之后：目录是"你都有哪些记忆"，这里是"其中这几条现在想起来了"。
-    recalled = memory.recall(life, question=question, recent=_recent_user_text(entries))
-    if recalled:
-        sys_parts.append("【和这次有关的旧事】\n"
-                         + "\n\n".join(f"《{x['name']}》：{x['text']}" for x in recalled))
-
-    system = "\n\n".join(sys_parts)
-
-    # ── messages：本次会话的近期原文，从最新往前装到装不下 ──
-    budget = max(0, window - output_reserve - safety - estimate_tokens(system))
-    fixed: list[dict] = []
-    fixed.append({"role": "user", "content": question})
-    spent = sum(estimate_tokens(m["content"]) for m in fixed)
-
-    # ── 单轮就超大：保留头尾、中间省略 ──
-    # 用户粘一整本书进来时，这一条 user 消息本身就超过窗口——这时连裁剪都救不了，
-    # 因为"最近的一条"就是那条超大的。按设计文档：保留头尾、中间省略，
-    # 并且**要告诉用户**（唯一必须说的情况：他这次说的话没被完整读到）。
-    notices: list[str] = []
-    if budget <= 0:
-        notices.append(
-            f"这个模型装不下他（{window} token 的窗口，光人格和记忆就占满了）。"
-            f"换个大窗口的模型，或者把人格写短一点。"
-        )
-    elif spent > budget:
-        # 先掐问题
-        allowed = budget - (spent - estimate_tokens(question))
-        clipped, cut = _clip(question, allowed)
-        if cut:
-            fixed[-1] = {"role": "user", "content": clipped}
-            spent = sum(estimate_tokens(m["content"]) for m in fixed)
-            notices.append(
-                f"这一条太长了（{len(question)} 字），他只读到了开头和结尾，"
-                f"中间 {cut} 字没读到——要完整读到得换个大窗口的模型。"
-            )
-
-    tail: list[dict] = []
-    kept = 0
-    idx = len(entries)
-
-    def take_older() -> bool:
-        """再往回装一条。装下了返回 True，装不下或没有更早的了返回 False。"""
-        nonlocal spent, kept, idx
-        if idx <= 0:
-            return False
-        e = entries[idx - 1]
-        cost = estimate_tokens(e.get("text", ""))
+        source = [e for e in source if e.get("sessionId") == session_id]
+    entries = ordered_history(source, pending=life.active_rounds.copy())
+    budget = history_budget(window, output_reserve) - estimate_tokens(system or "")
+    spent = estimate_tokens(question) + 8
+    if spent > budget:
+        raise ValueError("人格和当前问题超过模型窗口，请缩短内容或选择更大窗口的模型")
+    tail = []
+    for entry in reversed(entries):
+        cost = estimate_tokens(entry["text"]) + 8
         if spent + cost > budget:
-            return False
+            break
         spent += cost
-        kept += 1
-        idx -= 1
-        tail.insert(0, _entry_message(e))
-        return True
-
-    while take_older():
-        pass
-
-    # 装到一半可能正好停在「他自己说的」那句上。一条孤零零的助手发言不能当对话开头
-    # ——它前面那句用户发言已经被砍掉了，留着它模型也接不上。
-    # 丢掉，**账要跟着减**（否则界面会报一个没真发出去的数字），
-    # 然后用省下来的额度继续往回装（否则那段额度就白扔了）。
+        tail.append({"role": "user" if entry["kind"] == "you" else "assistant",
+                     "content": entry["text"]})
+    tail.reverse()
     while tail and tail[0]["role"] != "user":
-        spent -= estimate_tokens(tail[0]["content"])
-        kept -= 1
         tail.pop(0)
-        while take_older():
-            pass
-
-    messages = _merge_consecutive(tail + fixed)
-
-    return Built(
-        system=system or None,
-        messages=messages,
-        estimated_input=spent + estimate_tokens(system),
-        session_entries=kept,
-        older_summaries=len(older[:20]),
-        memory_lines=memory_lines,
-        dropped=len(entries) - kept,
-        budget=budget,
-        history=tail,
-        compacted=bool(own_summary),
-        recalled=len(recalled),
-        notices=notices,
-    )
-
-
-CLIP_HEAD = 0.65  # 保留头尾时开头占多少
-CLIP_TAIL = 0.30  # 结尾占多少（中间省略）
-
-
-def _clip(text: str, max_tokens: int) -> tuple[str, int]:
-    """太长的内容"保留头尾、中间省略"。返回 `(新文本, 省掉了多少字)`。
-
-    预算按**字符数**保守估计：中文一个字大约一个 token，英文更省。
-    宁可用不满，也不能猜大了——猜大了就是 400，用户看到的是报错而不是回答。
-
-    为什么留头也留尾：开头决定这段话在讲什么，结尾往往是结论和诉求
-    （"……所以我到底该不该辞职？"）。中间的大段材料是最可以省的部分。
-    """
-    limit = max(240, int(max_tokens))
-    if len(text) <= limit:
-        return text, 0
-    head = int(limit * CLIP_HEAD)
-    tail = int(limit * CLIP_TAIL)
-    cut = len(text) - head - tail
-    return f"{text[:head]}\n\n……（中间 {cut} 字没读到）……\n\n{text[-tail:]}", cut
-
-
-def _recent_user_text(entries: list[dict], limit: int = 3) -> str:
-    """最近几轮"用户说的话"。召回时用：本轮问题常常是"那这件事怎么办"，
-    光看这一句匹配不出任何东西，得带上前面在聊什么。"""
-    picked = [e.get("text", "") for e in entries if e.get("kind") == KIND_YOU][-limit:]
-    return "\n".join(picked)
-
-
-def _entry_message(e: dict) -> dict:
-    """一条对话记录 → 一条消息。
-
-    `heard`（他听到别人说的）是**老记录**里才有的：0.8.0 之前有"会议"模式，
-    后面的人听得到前面的人；从老项目搬来的记录里也有。现在不再产生新的，
-    但读的时候照旧当成"别人对他说的"——那是他真经历过的事。
-    带上说话人的名字，否则模型会把别人的观点当成自己刚说过的。
-    """
-    role = "user" if e.get("kind") in (KIND_YOU, KIND_HEARD) else "assistant"
-    prefix = f"（{e['who']}）" if e.get("kind") == KIND_HEARD else ""
-    return {"role": role, "content": prefix + e.get("text", "")}
-
-
-def _last_talked(life: Life, exclude_session: str) -> int:
-    """上一次说话是什么时候（不含当前这次会话）。
-
-    只读每个会话的**尾巴**：更老的部分已经压成摘要了，而摘要覆盖到哪一刻
-    水位线里写着（`compactedThrough`）。所以这里不用把历史全部解析一遍。
-    """
-    last = 0
-    for sid in life.sessions():
-        if sid == exclude_session:
-            continue
-        for e in life.read_session(sid, only_tail=True, warn=False):
-            last = max(last, e.get("t", 0))
-        last = max(last, int(life.compaction(sid).get("compactedThrough") or 0))
-    return last
-
-
-def _merge_consecutive(messages: list[dict]) -> list[dict]:
-    """合并相邻同角色消息。**Anthropic 要求 user/assistant 交替**，不合并会被拒。"""
-    out: list[dict] = []
-    for m in messages:
-        if not m["content"].strip():
-            continue
-        if out and out[-1]["role"] == m["role"]:
-            out[-1]["content"] += "\n\n" + m["content"]
+    messages = []
+    for message in tail + [{"role": "user", "content": question}]:
+        if messages and messages[-1]["role"] == message["role"]:
+            messages[-1]["content"] += "\n\n" + message["content"]
         else:
-            out.append(dict(m))
-    while out and out[0]["role"] != "user":
-        out.pop(0)
-    return out
+            messages.append(dict(message))
+    return Built(system, messages)
+
+
+def ordered_history(entries: list[dict], *, pending: set | None = None) -> list[dict]:
+    """按轮次配对，防止同一实体在不同会话并发作答时交错。"""
+    groups = {}
+    for entry in entries:
+        if entry.get("kind") not in ("you", "self") or not entry.get("text") or entry.get("error"):
+            continue
+        groups.setdefault(entry["roundId"], []).append(entry)
+    result = []
+    for rid, group in groups.items():
+        if rid in (pending or set()) and not any(e["kind"] == "self" for e in group):
+            continue
+        result.extend(sorted(group, key=lambda e: e["kind"] != "you"))
+    return result

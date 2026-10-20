@@ -1,16 +1,5 @@
 <script setup lang="ts">
-/**
- * 加一位 / 编辑席位。**骨架就是老界面那个弹窗**：
- *
- *   .field > label 选数字人
- *     .pick-cats   先点平台（一家一个方块，带「N 位数字人」）
- *     .pick-grid   再看这家的人（.pick-cell：图标 + 名字 + 一句话）
- *   .advanced      高级设置（模型 / 重新拉取）——收起来，别碍事
- *   .modal-foot    移除席位 · 取消 · 加进来/保存
- *
- * 为什么分两级而不是一路铺开：数字人一多就得一路往下滚，而且看不出谁归属哪一家。
- * 「同名不同人」也只有先看到分类才明白——同一个查理·芒格在两家平台上各是一个个体。
- */
+/** 添加和编辑提问对象：按平台选人，可覆盖本次使用的模型。 */
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { useApp } from '../store'
@@ -29,7 +18,11 @@ const model = ref('')
 const fetching = ref(false)
 const problem = ref('')
 
-/** 平台图标：认得出是哪家就够了（老界面也是这么干的小标记）。 */
+function available(id: string): boolean {
+  return !app.seats.some((s) => s.lifeId === id && s.seatNo !== app.modalSeat)
+}
+
+
 function logo(p: { kind?: string; baseUrl?: string; label?: string } | null): string {
   const s = `${p?.baseUrl ?? ''} ${p?.label ?? ''}`.toLowerCase()
   if (s.includes('deepseek')) return '🐋'
@@ -50,11 +43,11 @@ const cats = computed(() => {
     label: p.label || p.name || '（未命名平台）',
     icon: logo(p),
     generic: false,
-    list: app.lives.filter((l) => l.providerId === p.id),
+    list: app.lives.filter((l) => l.providerId === p.id && available(l.id)),
   }))
-  const orphans = app.lives.filter((l) => !l.providerId || !app.providerById(l.providerId))
+  const orphans = app.lives.filter((l) => available(l.id) && (!l.providerId || !app.providerById(l.providerId)))
   if (orphans.length) {
-    out.push({ key: '', label: '通用（裸模型直连）', icon: '🌐', generic: true, list: orphans })
+    out.push({ key: '', label: '平台未配置', icon: '🌐', generic: true, list: orphans })
   }
   return out.filter((c) => c.list.length)
 })
@@ -77,7 +70,7 @@ onMounted(() => {
   const cur = editing.value
   const life = cur ? app.lives.find((l) => l.id === cur.lifeId) : null
   if (life) {
-    cat.value = life.providerId || ''
+    cat.value = app.providerById(life.providerId) ? life.providerId : ''
     lifeId.value = life.id
     model.value = cur?.model || life.model || ''
   } else {
@@ -87,7 +80,7 @@ onMounted(() => {
 
 function pickCat(key: string) {
   cat.value = key
-  // 换了平台，原来选的人就不在这一类里了
+
   if (!pickedCat.value?.list.some((l) => l.id === lifeId.value)) {
     lifeId.value = ''
     model.value = ''
@@ -126,13 +119,17 @@ async function apply() {
     problem.value = '先选一位数字人'
     return
   }
-  const next = app.seats
-    .filter((s) => s.seatNo !== seatNo.value)
-    .map((s) => ({ lifeId: s.lifeId, model: s.model }))
-  next.push({ lifeId: lifeId.value, model: model.value })
-  await app.setSeats(next)
-  app.closeModal()
-  await app.loadRounds()
+  const chosen = { lifeId: lifeId.value, model: model.value }
+  const next = app.seats.map((s) => s.seatNo === seatNo.value
+    ? chosen : { lifeId: s.lifeId, model: s.model })
+  if (isNew.value) next.push(chosen)
+  try {
+    await app.setSeats(next)
+    app.closeModal()
+    await app.loadRounds()
+  } catch (e) {
+    problem.value = e instanceof Error ? e.message : String(e)
+  }
 }
 
 async function removeSeat() {
@@ -155,7 +152,7 @@ async function removeSeat() {
           <label>选数字人</label>
 
           <div v-if="!cats.length" class="hint">
-            数字人库是空的。先去「数字人库」用一份蓝图 + 一家平台创建一位。
+            没有可添加的数字人。可以先去「数字人库」创建一位。
           </div>
 
           <template v-else>
@@ -207,6 +204,7 @@ async function removeSeat() {
               <div class="row" style="gap: 10px; align-items: center">
                 <select v-if="models.length" v-model="model" style="flex: 1">
                   <option value="">（用他的默认模型 {{ pickedLife.model || '—' }}）</option>
+                  <option v-if="model && !models.includes(model)" :value="model">{{ model }}</option>
                   <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
                 </select>
                 <input
@@ -222,7 +220,7 @@ async function removeSeat() {
               </div>
               <div class="hint">
                 留空就用这位数字人自己的默认模型（{{ pickedLife.model || '—' }}）；
-                平台和模型都跟着数字人走，换模型去「数字人库」改。
+                这里选择的模型只用于本次会话。
               </div>
             </div>
           </div>

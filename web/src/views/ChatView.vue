@@ -1,14 +1,5 @@
 <script setup lang="ts">
-/**
- * 一问多答。**骨架照老界面**：
- *
- *   .thread-head  标题（可改名）+ 「N 位」
- *   .seat-bar     这次问谁（点一下换人）+「＋ 加一位」
- *   .timeline     可滚动：一轮一轮往下堆（.round = 提问气泡 + 回答网格）
- *   .composer     底部输入区
- *
- * 老界面就是这么摆的，所以看起来是同一个东西。
- */
+/** 一问多答页面：提问对象、问答轮次、流式回答和输入区。 */
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { useApp } from '../store'
@@ -37,9 +28,8 @@ onMounted(async () => {
 
 watch(
   () => app.currentSessionId,
-  async () => {
+  () => {
     title.value = session.value?.title ?? '新的对话'
-    await app.loadRounds()
   },
 )
 
@@ -55,7 +45,7 @@ function useExample(text: string) {
 }
 
 function onKey(e: KeyboardEvent) {
-  // Enter 发送、Shift+Enter 换行——老界面提示行就是这么写的
+
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     void app.sendQuestion()
@@ -93,19 +83,22 @@ function fmtTime(ms: number) {
       :key="seat.seatNo"
       class="seat-chip"
       title="点一下改这位的配置"
-      @click="app.openModal('speaker', String(seat.seatNo))"
+      @click="!app.roundRunning && app.openModal('speaker', String(seat.seatNo))"
     >
       <span class="av">{{ seat.emoji }}</span>
       <div class="meta">
         <div class="nm">{{ seat.name }}</div>
         <div class="md">{{ seat.model || '没选模型' }}</div>
       </div>
-      <button class="seat-del" title="这次不问他" @click.stop="app.removeSeat(seat.seatNo)">✕</button>
+      <button class="seat-del" :disabled="app.roundRunning" title="这次不问他" @click.stop="app.removeSeat(seat.seatNo)">✕</button>
     </div>
-    <button class="seat-chip add" @click="app.openModal('speaker', '0')">＋ 加一位</button>
+    <button class="seat-chip add" :disabled="app.roundRunning" @click="app.openModal('speaker', '0')">＋ 加一位</button>
   </div>
 
   <div class="timeline">
+    <button v-if="app.hasMoreRounds" class="btn" :disabled="app.loading" @click="app.loadRounds(10, true)">
+      {{ app.loading ? '正在读取…' : '加载更早的对话' }}
+    </button>
     <!-- 空状态 -->
     <div v-if="!app.rounds.length && !app.loading" class="empty">
       <div class="big">🎙️</div>
@@ -124,7 +117,7 @@ function fmtTime(ms: number) {
       </div>
     </div>
 
-    <div v-for="rnd in app.rounds" :key="rnd.t" class="round">
+    <div v-for="rnd in app.rounds" :key="rnd.id || rnd.t" class="round">
       <div class="ask-bubble">
         <div class="inner">{{ rnd.question }}</div>
       </div>
@@ -140,9 +133,6 @@ function fmtTime(ms: number) {
             </div>
             <div class="spacer"></div>
             <span v-if="a.running" class="pill">作答中…</span>
-            <button class="btn tiny" title="看他的记忆" @click="app.openModal('memory', a.lifeId)">
-              记忆
-            </button>
           </div>
 
           <div v-for="(n, i) in a.notices" :key="i" class="answer-note">⚠ {{ n }}</div>
@@ -155,7 +145,7 @@ function fmtTime(ms: number) {
           <div v-if="a.error" class="answer-note err">✕ {{ a.error }}</div>
 
           <div class="answer-body">
-            <div v-if="a.text" v-html="renderMarkdown(a.text)"></div>
+            <div v-if="a.text" class="md" v-html="renderMarkdown(a.text)"></div>
             <span v-else-if="a.running" class="cursor">▍</span>
             <p v-else-if="!a.error" class="composer-hint" style="margin: 0">还没说话。</p>
           </div>
@@ -163,7 +153,6 @@ function fmtTime(ms: number) {
           <div v-if="a.text || a.ms || a.tokens" class="answer-foot">
             <span v-if="a.ms">{{ (a.ms / 1000).toFixed(1) }}s</span>
             <span v-if="a.tokens">{{ a.tokens }} token</span>
-            <span v-if="a.window">窗口 {{ a.window }} · 带了 {{ a.keptEntries ?? 0 }} 条原文</span>
             <div class="spacer"></div>
             <span v-if="a.finishReason === 'length'" style="color: var(--warn)">
               被输出上限截断

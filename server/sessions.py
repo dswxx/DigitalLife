@@ -1,20 +1,4 @@
-"""一次对话：**问过哪些人**。
-
-新数据布局里原本没有这个东西——每一位生命只记"我亲历了什么"
-（`humans/<生命>/sessions/<会话>.jsonl`）。但"这次问了谁"是**这次对话自己的属性**，
-不能塞进任何一位生命的记忆里（那会变成"我以为别人也在"）。
-
-所以：
-
-    data/sessions/<对话>.json          这次对话：问了谁、什么时候开的
-    data/humans/<生命>/sessions/<对话>.jsonl   那一位亲历的记录（各记各的）
-
-两边用同一个对话 id 对上。**记忆属于个体，对话只记录"当时问了谁"。**
-
-（0.8.0 之前这里叫"桌子"，还有第二种规矩 `council`——按顺序说、后面的人听得到前面。
-圆桌那套取消了，所以只剩一种行为：一次提问、选中的几位并排作答、各自独立。
-老文件里的 `mode` 字段不再读也不再写。）
-"""
+"""会话信息、完整问答原文与按轮次分页。"""
 
 from __future__ import annotations
 
@@ -31,13 +15,17 @@ _ID_SAFE = re.compile(r"[^0-9A-Za-z_\u4e00-\u9fff-]+")
 
 
 def sessions_dir(data_dir):
-    from pathlib import Path
-
     return Path(data_dir) / "sessions"
 
 
 def session_path(data_dir, session_id: str):
-    return sessions_dir(data_dir) / f"{_ID_SAFE.sub('_', session_id)}.json"
+    if not isinstance(session_id, str) or not session_id or _ID_SAFE.search(session_id):
+        raise ValueError("会话 id 只能包含字母、数字、中文、下划线和短横线")
+    return sessions_dir(data_dir) / session_id / "info.json"
+
+
+def messages_path(data_dir, session_id: str):
+    return session_path(data_dir, session_id).with_name("messages.jsonl")
 
 
 @dataclass
@@ -47,6 +35,7 @@ class Session:
     seats: list[dict] = field(default_factory=list)
     created_at: int = 0
     updated_at: int = 0
+    rounds: int = 0
 
     def to_json(self) -> dict:
         return {
@@ -55,34 +44,22 @@ class Session:
             "seats": list(self.seats),
             "createdAt": self.created_at or now_ms(),
             "updatedAt": self.updated_at or now_ms(),
+            "rounds": self.rounds,
         }
 
     @staticmethod
     def from_json(d: dict) -> "Session":
-        seats = []
-        for i, s in enumerate(d.get("seats") or []):
-            if not s.get("lifeId"):
-                continue  # 老数据里有空座位（还没放数字人），跳过
-            seats.append({
-                "seatNo": int(s.get("seatNo") or i + 1),
-                "lifeId": s["lifeId"],
-                "providerId": s.get("providerId") or "",
-                "model": s.get("model") or "",
-                "temperature": s.get("temperature"),
-            })
         return Session(
             id=d.get("id") or new_id("th"),
             title=str(d.get("title") or DEFAULT_TITLE),
-            seats=seats,
+            seats=normalize_seats(d.get("seats") or []),
             created_at=int(d.get("createdAt") or 0),
             updated_at=int(d.get("updatedAt") or 0),
+            rounds=int(d.get("rounds") or 0),
         )
 
-    def seat(self, seat_no: int) -> dict | None:
-        return next((s for s in self.seats if s["seatNo"] == seat_no), None)
-
     def ordered(self) -> list[dict]:
-        """按序号排序——**只为顺序稳定**（谁在第几位），不再代表谁先说。"""
+        """按展示顺序返回参与者。模型调用仍然并发。"""
         return sorted(self.seats, key=lambda s: s["seatNo"])
 
 
@@ -101,16 +78,21 @@ def create(data_dir, *, title: str = DEFAULT_TITLE,
 
 def normalize_seats(seats: list[dict]) -> list[dict]:
     out = []
+    seen = set()
     for i, s in enumerate(seats):
         if not s.get("lifeId"):
             continue
+        if s["lifeId"] in seen:
+            raise ValueError("同一会话不能重复加入同一个体")
+        seen.add(s["lifeId"])
         out.append({
             "seatNo": int(s.get("seatNo") or i + 1),
             "lifeId": s["lifeId"],
             "providerId": s.get("providerId") or "",
             "model": s.get("model") or "",
-            "temperature": s.get("temperature"),
         })
+    if len({s["seatNo"] for s in out}) != len(out) or any(s["seatNo"] < 1 for s in out):
+        raise ValueError("参与者序号必须为互不重复的正整数")
     return out
 
 
@@ -130,40 +112,71 @@ def list_all(data_dir) -> list[Session]:
     if not d.exists():
         return []
     out = []
-    for p in sorted(d.glob("*.json")):
+    for p in sorted(d.glob("*/info.json")):
         got = store.read_json(p, None)
         if isinstance(got, dict) and got.get("id"):
             out.append(Session.from_json(got))
     return sorted(out, key=lambda s: s.updated_at, reverse=True)
 
 
-def summary(data_dir, session: Session) -> dict:
-    """给左侧栏那张小卡用的摘要：`N 轮 · M 位 · 什么时候动过`。
-
-    轮数从**记录里数**（每位生命每轮各记一条 `you`，所以数一位的就够了）——
-    对话本身只记"问了谁"，不记轮数，那份原文在生命自己的记录里。
-    """
-    rounds = 0
-    if session.seats:
-        from .life import KIND_YOU, Life
-
-        first = Life.load(Path(data_dir) / "humans" / session.seats[0]["lifeId"])
-        if (first.root / "identity.json").exists():
-            rounds = sum(1 for e in first.read_session(session.id, warn=False)
-                         if e.get("kind") == KIND_YOU)
-    return {**session.to_json(), "rounds": rounds, "seatCount": len(session.seats)}
+def summary(session: Session) -> dict:
+    """概况不读取聊天记录，启动和侧栏列表保持轻量。"""
+    return {**session.to_json(), "seatCount": len(session.seats)}
 
 
 def delete(data_dir, session_id: str) -> bool:
     p = session_path(data_dir, session_id)
+    if p.parent.resolve().parent != sessions_dir(data_dir).resolve():
+        raise ValueError("会话目录越界")
     if not p.exists():
         return False
-    p.unlink()
+    import shutil
+
+    shutil.rmtree(p.parent)
     return True
 
 
-def touch(data_dir, session_id: str) -> None:
-    """有人说过话了：把这次对话往前排。"""
-    s = load(data_dir, session_id)
-    if s:
-        save(data_dir, s)
+def read_messages(data_dir, sid: str) -> list[dict]:
+    entries, bad = store.read_jsonl(messages_path(data_dir, sid))
+    if bad:
+        raise OSError(f"会话 {sid} 有 {bad} 条损坏记录，请从备份恢复；原文件未改动")
+    return entries
+
+
+def personal_message(message: dict, life_id: str) -> dict | None:
+    """只把实际收到的问题和本人的回答写入个人经历。"""
+    if message["kind"] == "you":
+        if not any(p["lifeId"] == life_id for p in message.get("participants", [])):
+            return None
+        return {k: v for k, v in message.items() if k != "participants"}
+    if message["kind"] == "self" and message.get("lifeId") == life_id:
+        return dict(message)
+    return None
+
+
+def round_views(messages: list[dict], *, before: str = "", limit: int = 3) -> dict:
+    """按稳定轮次 ID 展示历史；没有收尾的调用明确显示未完成。"""
+    rounds = []
+    by_id = {}
+    for entry in messages:
+        if entry.get("kind") == "you":
+            r = {"id": entry["roundId"], "t": entry["t"], "question": entry["text"],
+                 "participants": entry.get("participants", []), "answers": []}
+            rounds.append(r)
+            by_id[r["id"]] = r
+        elif entry.get("kind") == "self" and entry.get("roundId") in by_id:
+            by_id[entry["roundId"]]["answers"].append({**entry, "content": entry.get("text", "")})
+    if before:
+        index = next((i for i, r in enumerate(rounds) if r["id"] == before), None)
+        if index is None:
+            raise ValueError("找不到历史游标，请重新打开会话")
+        rounds = rounds[:index]
+    limit = max(1, min(100, limit))
+    page = rounds[-limit:]
+    for r in page:
+        answered = {a["lifeId"] for a in r["answers"]}
+        r["answers"].extend({**p, "content": "", "error": "未收到完整回答（调用仍在进行或已中断）"}
+                            for p in r["participants"] if p["lifeId"] not in answered)
+        r["answers"].sort(key=lambda a: a["seatNo"])
+    return {"rounds": page, "hasMore": len(rounds) > limit,
+            "before": page[0]["id"] if page else ""}

@@ -1,5 +1,3 @@
-# 统一换行：文本一律 LF 入库，Windows 上检出也不折腾。
-# 老项目就是这么守的，跨平台的时候省掉一整类"只有某人机器上能跑"的问题。
 * text=auto eol=lf
 
 # ── 例外：Windows 上双击就能跑的那些 ──
@@ -7,7 +5,7 @@
 # 而且它按 **OEM 代码页**读文件——文件本身是 UTF-8 的中文会被解码错、
 # 把后一个 token 的头几个字符吃掉，报出 "'o' 不是内部或外部命令" 这种怪东西。
 # 所以 .cmd 里只许写 ASCII（中文交给 Python 打印），并且强制 CRLF。
-# dev/test_docs.py 会盯着这两条。
+# tests/test_docs.py 检查启动器的编码与换行。
 *.cmd text eol=crlf
 *.bat text eol=crlf
 *.ps1 text eol=crlf
@@ -20,6 +18,3 @@
 *.ico binary
 *.woff2 binary
 *.zip binary
-
-# 锁文件不算代码，别在 diff 里出现
-web/package-lock.json -diff
