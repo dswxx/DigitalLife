@@ -1,4 +1,8 @@
-"""统一模型调用入口：流式回答与模型列表。"""
+"""协议适配入口：将两种上游协议统一成业务层可消费的事件。
+
+build_plan 负责请求形状，SSE 层负责网络分块，parse_event 负责字段差异。
+这里不认识会话或实体，也不保存聊天记录。
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ from collections.abc import Iterator
 
 from . import anthropic, openai
 from .core import (DEFAULT_MAX_TOKENS, AdapterError, IDLE_MS, Transport,
-                   friendly_http_error, models_endpoint, normalize_base, post_stream)
+                   friendly_http_error, is_context_limit, models_endpoint, normalize_base, post_stream)
 from .sse import iter_sse_data
 
 ADAPTERS = {"openai": openai, "anthropic": anthropic}
@@ -20,7 +24,11 @@ def _adapter(provider: dict):
 def stream_chat(provider: dict, *, model: str, system: str | None, messages: list[dict],
                 max_tokens: int = DEFAULT_MAX_TOKENS,
                 timeout: float | None = None, transport: Transport) -> Iterator[dict]:
-    """解析上游 SSE，统一输出正文、推理、用量和结束事件。"""
+    """【核心】一次模型调用：校验配置 → 组装协议 → 请求 → SSE → 统一事件。
+
+    done 仅表示适配器读流结束；业务保存完成由 chat 发出的 seat_done 表示。
+    timeout 以秒传给传输层，默认环境变量 IDLE_MS 在此仅转换一次单位。
+    """
     label = provider.get("label") or provider.get("name") or provider.get("id") or "该平台"
     if not provider.get("apiKey"):
         raise AdapterError(400, f"{label} 还没填 API Key")
@@ -45,6 +53,7 @@ def stream_chat(provider: dict, *, model: str, system: str | None, messages: lis
                     "这个模型不接受指定的「单次回答最长 token」，已改用平台的默认值重发一次",
         }
 
+    # 模型报错可能发生在 HTTP 200 的流内部，仍应转为业务可处理的异常。
     for data in iter_sse_data(opened.chunks):
         if not data:
             continue
@@ -56,7 +65,9 @@ def stream_chat(provider: dict, *, model: str, system: str | None, messages: lis
         for chunk in adapter.parse_event(evt):
             kind = chunk["type"]
             if kind == "error":
-                raise AdapterError(502, f"{label}：{chunk['text']}")
+                # SSE 的 HTTP 状态可能仍是 200；保留原始 code/type 参与分类。
+                kind = "context_limit" if is_context_limit(400, json.dumps(evt, ensure_ascii=False)) else ""
+                raise AdapterError(502, f"{label}：{chunk['text']}", kind=kind)
             yield chunk
 
     yield {"type": "done"}
@@ -76,6 +87,7 @@ def list_models(provider: dict, *, timeout: float = 20.0, transport: Transport) 
         data = json.loads(body)
     except json.JSONDecodeError as e:
         raise AdapterError(502, f"{provider.get('name') or base}：模型列表不是合法 JSON（{e}）") from e
+    # 不同兼容平台可能给 data 数组、直接数组或字符串模型名，在入口统一为对象列表。
     items = data.get("data") if isinstance(data, dict) else data
     if not isinstance(items, list):
         return []

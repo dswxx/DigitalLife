@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数字生命 · AI 数字人</title>
+    <!-- Vue 挂载前应用主题，减少深色主题启动时先闪现浅色背景的情况。 -->
     <script>
       try {
         var savedTheme = localStorage.getItem('digitallife.theme')
@@ -12,7 +13,7 @@
         /* 隐私模式下 localStorage 可能不可用，忽略即可 */
       }
     </script>
-    <!-- 整个占位值由服务端替换，HTML 禁止缓存。 -->
+    <!-- 后端按完整占位表达式替换；不要修改下面的标记或把实际令牌写入源码。 -->
     <script>
       window.__DL_BOOT__ = /*__DL_BOOT__*/null;
     </script>

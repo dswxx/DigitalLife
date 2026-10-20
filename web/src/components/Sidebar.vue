@@ -16,6 +16,7 @@ const THEMES = [
   { id: 'ink', name: '墨夜', desc: '深色，夜里用', ring: '#7d8ba6', fill: '#22252c' },
 ]
 const theme = ref(localStorage.getItem('digitallife.theme') || '')
+// 主题只属于本机浏览器显示偏好，不写进后端配置或聊天记录。
 const currentTheme = computed(() => THEMES.find((t) => t.id === theme.value) ?? THEMES[0])
 
 function pickTheme(id: string) {
@@ -42,6 +43,7 @@ function ago(ms: number): string {
 }
 
 async function newTalk() {
+  // 显式新建永远创建空会话，与 store.ensureSession 的“优先复用”语义不同。
   const created = await api.createSession({ title: '新的对话', seats: [] })
   app.sessions = [created, ...app.sessions]
   app.currentSessionId = created.id
@@ -51,6 +53,7 @@ async function newTalk() {
 }
 
 async function openTalk(id: string) {
+  // 先切换并清空展示，慢历史响应由 store 的请求序号校验拦截。
   app.currentSessionId = id
   app.syncSeatsFromSession()
   app.clearRound()
@@ -59,6 +62,7 @@ async function openTalk(id: string) {
 }
 
 async function delTalk(id: string) {
+  // 删除当前会话后选择下一份概况；实体个人历史的保留由后端保证。
   await api.deleteSession(id)
   confirmDel.value = ''
   await app.refreshSessions()

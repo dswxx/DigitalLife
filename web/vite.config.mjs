@@ -1,3 +1,4 @@
+/** 前端构建与开发代理；正式使用时由 Python 后端托管 dist 并注入启动令牌。 */
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'

@@ -20,13 +20,14 @@ def stable_id(prefix: str, *parts: str) -> str:
 
 @dataclass
 class Template:
+    """可复用的系统提示词与展示信息；不保存任何实体的聊天历史。"""
     id: str
     name: str
     system: str = ""
     emoji: str = "🙂"
     tagline: str = ""
     tags: list[str] = field(default_factory=list)
-    bare: bool = False  # 纯基线：服务端**不构造** system 字段
+    bare: bool = False  # 普通 AI：省略人格，且请求只使用本会话的个人问答。
     builtin: bool = False  # 内置（可删，但重新播种会再出现）
     origin: str = ""  # user=用户编写 | seed=内置
     created_at: int = 0
@@ -89,7 +90,11 @@ def make(name: str, system: str, **kw) -> Template:
 
 
 def update(data_dir, old: Template, changes: dict, *, lives=None) -> Template:
-    """先保存新内容，再更新引用，最后移除旧文件；写入失败时旧人格仍在。"""
+    """名称或人格正文变化会产生新 ID，因此必须同时更新实体的 templateId。
+
+    先存新人格，再逐人修改引用，最后删旧文件；开头写入失败时旧人格仍在。
+    多个身份文件之间没有事务，lives 传入运行时对象以同步其内存身份。
+    """
     new = make(
         (changes.get("name") or old.name).strip(), changes.get("system", old.system),
         emoji=changes.get("emoji", old.emoji), tagline=changes.get("tagline", old.tagline),
@@ -111,9 +116,9 @@ def update(data_dir, old: Template, changes: dict, *, lives=None) -> Template:
 
 
 def seed(data_dir) -> int:
-    """把内置模板写进去（幂等）。返回新写了几个。
+    """按内容稳定 ID 补齐缺失的内置人格，返回新增数量，不覆盖已有文件。
 
-    幂等靠确定性 id：已经存在的跳过，所以随时可以再调一次而不会重复。
+    删除过的内置人格再次启动时会被补回；这不是自定义人格的迁移或重写。
     """
     added = 0
     for t in presets.SEED_TEMPLATES:

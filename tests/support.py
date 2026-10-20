@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def seed_data(root, base_url="http://127.0.0.1:1/v1"):
+    """创建两位数字人和一位普通 AI；HTTP 测试传入本机假上游地址。"""
     tpl = templates.make("测试作者", "你是测试作者，直接回答问题。")
     bare = templates.make("普通 AI", "", bare=True)
     for item in (tpl, bare):
@@ -38,8 +39,24 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def fill_history(runtime, session, rounds=6, size=150):
+    """通过真实两处保存入口生成长历史，用于 HTTP 和浏览器压缩场景。"""
+    base = len(runtime.open_session(session.id))
+    people = [{**seat, "name": runtime.lives[seat["lifeId"]].identity["name"], "emoji": "🙂"}
+              for seat in session.ordered()]
+    for i in range(rounds):
+        rid = f"fixture_{session.id}_{base}_{i}"
+        runtime.write_message(session.id, {"kind": "you", "text": f"较早问题{i}：" + "问" * size,
+                                          "roundId": rid, "messageId": rid + "_you", "t": i + 1,
+                                          "participants": people})
+        for person in people:
+            runtime.write_message(session.id, {**person, "kind": "self", "text": f"较早回答{i}：" + "答" * size,
+                                              "roundId": rid, "messageId": rid + "_" + person["lifeId"], "t": i + 1})
+
+
 @contextmanager
 def running_server(app):
+    """在临时本机端口运行真实 ASGI 生命周期，退出测试时通知服务结束并等待回收。"""
     port = free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)

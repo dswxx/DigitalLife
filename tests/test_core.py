@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from server import chat, context, sessions, settings, store, templates
+from server import chat, compression, context, sessions, settings, store, templates
 from server.adapters import AdapterError
 from server.life import Life
 from server.runtime import Runtime
@@ -19,6 +19,7 @@ from tests.support import ROOT, seed_data
 
 
 class CoreTests(unittest.TestCase):
+    """使用临时文件与替代模型流检验业务约束，不调用网络或读取个人数据。"""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix=".tmp-core-", dir=ROOT / "tests")
         self.addCleanup(self.tmp.cleanup)
@@ -28,6 +29,7 @@ class CoreTests(unittest.TestCase):
         self.a, self.b, self.bare = [self.rt.lives[l.id] for l in lives]
 
     def message(self, kind, text, rid="r1", sid=None, life=None):
+        """经由真实保存入口构造历史，避免测试绕过两处记录与内存追加逻辑。"""
         life = life or self.a
         entry = {"kind": kind, "text": text, "roundId": rid, "t": 1,
                  "messageId": rid + ("_you" if kind == "you" else "_" + life.id)}
@@ -43,6 +45,7 @@ class CoreTests(unittest.TestCase):
                              settings=self.rt.settings, transport=None, runtime=self.rt))
 
     def test_startup_is_lazy_and_reuses_open_session(self):
+        # 首次读取后让读盘函数直接失败，从外部行为验证确实复用了运行时记录。
         self.assertEqual(self.rt.messages, {})
         self.assertTrue(all(l._history is None for l in self.rt.lives.values()))
         self.rt.open_session(self.session.id)
@@ -69,7 +72,7 @@ class CoreTests(unittest.TestCase):
         self.message("you", "之前的问题")
         self.message("self", "之前的回答")
         built = context.build_context(self.a, session_id=self.session.id, question="当前问题",
-                                      window=128000, persona="人格原文")
+                                      persona="人格原文")
         self.assertEqual(built.system, "人格原文")
         self.assertEqual(built.messages, [
             {"role": "user", "content": "之前的问题"},
@@ -80,33 +83,33 @@ class CoreTests(unittest.TestCase):
     def test_cross_session_history_and_bare_isolation(self):
         self.message("you", "其他会话的问题")
         self.message("self", "其他会话的回答")
-        digital = context.build_context(self.a, session_id="other", question="新问题", window=128000)
-        bare = context.build_context(self.a, session_id="other", question="新问题", window=128000,
+        digital = context.build_context(self.a, session_id="other", question="新问题")
+        bare = context.build_context(self.a, session_id="other", question="新问题",
                                      persona="不该发送", bare=True)
         self.assertEqual(len(digital.messages), 3)
         self.assertIsNone(bare.system)
         self.assertEqual(bare.messages, [{"role": "user", "content": "新问题"}])
 
-    def test_context_window_keeps_recent_originals_without_changing_disk(self):
+    def test_context_sends_all_original_text_without_reasoning_or_disk_changes(self):
         for i in range(6):
             self.message("you", f"{i}：" + "问" * 150, rid=f"r{i}")
             self.message("self", f"{i}：" + "答" * 150, rid=f"r{i}")
         original = self.a.history_path().read_bytes()
-        built = context.build_context(self.a, session_id=self.session.id, question="当前问题",
-                                      window=2000, output_reserve=200)
+        self.a._history[-1]["reasoning"] = "不能发给模型的历史思考"
+        built = context.build_context(self.a, session_id=self.session.id, question="当前问题")
         self.assertIn("5：", str(built.messages))
-        self.assertNotIn("0：", str(built.messages))
+        self.assertIn("0：", str(built.messages))
+        self.assertNotIn("不能发给模型的历史思考", str(built.messages))
         self.assertEqual(original, self.a.history_path().read_bytes())
-        with self.assertRaises(ValueError):
-            context.build_context(self.a, session_id=self.session.id, question="问" * 3000,
-                                  window=2000, output_reserve=200)
+        long = context.build_context(self.a, session_id=self.session.id, question="问" * 300000)
+        self.assertEqual(long.messages[-1]["content"], "问" * 300000)
 
     def test_interleaved_rounds_are_paired(self):
         self.message("you", "甲问", rid="r1")
         self.message("you", "乙问", rid="r2")
         self.a.active_rounds.add("r2")
         self.message("self", "甲答", rid="r1")
-        built = context.build_context(self.a, session_id=self.session.id, question="现在", window=128000)
+        built = context.build_context(self.a, session_id=self.session.id, question="现在")
         self.assertEqual([m["content"] for m in built.messages], ["甲问", "甲答", "现在"])
 
     def test_pagination_and_historical_participants(self):
@@ -147,7 +150,7 @@ class CoreTests(unittest.TestCase):
                 calls.append(kw)
             yield {"type": "text", "text": kw["model"] + "回答"}
             yield {"type": "finish", "reason": "stop"}
-        with patch.object(chat, "stream_chat", side_effect=stream):
+        with patch.object(compression, "stream_chat", side_effect=stream):
             events = self.ask()
         self.assertEqual(len(calls), 2)
         self.assertEqual(len([e for e in events if e["type"] == "seat_done"]), 2)
@@ -159,18 +162,19 @@ class CoreTests(unittest.TestCase):
         def stream(*a, **kw):
             yield {"type": "reasoning", "text": "思考"}
             yield {"type": "finish", "reason": "length"}
-        with patch.object(chat, "stream_chat", side_effect=stream) as called:
+        with patch.object(compression, "stream_chat", side_effect=stream) as called:
             events = self.ask()
         self.assertEqual(called.call_count, 2)
         self.assertTrue(all(e["finishReason"] == "length" for e in events if e["type"] == "seat_done"))
 
     def test_save_failure_is_not_reported_as_completed(self):
+        # 模拟会话已写、个人历史写入失败，验证不重复追加，也不报告虚假的完成。
         append = Life.append_history
         def save(life, entry):
             if entry["kind"] == "self":
                 raise OSError("磁盘写入失败")
             return append(life, entry)
-        with patch.object(chat, "stream_chat", side_effect=lambda *a, **kw: iter([{"type": "text", "text": "回答"}])), \
+        with patch.object(compression, "stream_chat", side_effect=lambda *a, **kw: iter([{"type": "text", "text": "回答"}])), \
              patch.object(Life, "append_history", save):
             events = self.ask()
         self.assertFalse(any(e["type"] in ("seat_done", "round_done") for e in events))
@@ -181,12 +185,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.a.history_path().read_bytes(), before)
 
     def test_disconnect_keeps_background_round_locked_until_saved(self):
+        # 用事件明确控制“已开始、尚未结束”的时间段，避免依赖机器快慢猜测并发。
         entered, release = threading.Event(), threading.Event()
         def stream(*a, **kw):
             entered.set()
             release.wait(5)
             yield {"type": "text", "text": "完整回答"}
-        with patch.object(chat, "stream_chat", side_effect=stream):
+        with patch.object(compression, "stream_chat", side_effect=stream):
             gen = chat.ask(self.root, session_id=self.session.id, question="问题",
                            settings=self.rt.settings, transport=None, runtime=self.rt)
             self.assertEqual(next(gen)["type"], "round_start")
@@ -210,6 +215,15 @@ class CoreTests(unittest.TestCase):
         saved = settings.load(self.root)
         self.assertEqual(saved["providers"][0]["apiKey"], "test-secret")
         self.assertEqual(len(saved["modelInfo"]), 8)
+
+    def test_legacy_context_window_no_longer_limits_requests_or_output(self):
+        self.rt.update_settings(advanced={"contextWindow": 1, "maxTokens": 8192},
+                                model_info={"model-a": {"contextWindow": 1}})
+        self.assertEqual(settings.resolve_output_cap(self.rt.settings, "model-a"), 8192)
+        with patch.object(compression, "stream_chat", side_effect=lambda *a, **kw: iter([{"type": "text", "text": "正常回答"}])) as call:
+            self.ask(question="问" * 200000)
+        self.assertEqual(call.call_count, 2)
+        self.assertTrue(all(c.kwargs["messages"][-1]["content"] == "问" * 200000 for c in call.call_args_list))
 
     def test_bad_json_is_reported_without_rewriting_or_moving_it(self):
         path = self.root / "settings.json"

@@ -17,6 +17,7 @@ const EXAMPLES = [
 ]
 
 onMounted(async () => {
+  // 页面只负责当前会话的展示；历史身份、分页与流式状态统一由 store 管理。
   if (!app.sessions.length) await app.refreshSessions()
   if (!app.currentSessionId && app.sessions.length) {
     app.currentSessionId = app.sessions[0].id
@@ -45,6 +46,7 @@ function useExample(text: string) {
 }
 
 function onKey(e: KeyboardEvent) {
+  // Enter 提交并阻止默认换行，Shift+Enter 保留多行输入。
 
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -144,6 +146,7 @@ function fmtTime(ms: number) {
 
           <div v-if="a.error" class="answer-note err">✕ {{ a.error }}</div>
 
+          <!-- 正文只插入经过 md.ts 转义和受控解析后的 HTML。 -->
           <div class="answer-body">
             <div v-if="a.text" class="md" v-html="renderMarkdown(a.text)"></div>
             <span v-else-if="a.running" class="cursor">▍</span>

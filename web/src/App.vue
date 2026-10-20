@@ -11,11 +11,13 @@ import SpeakerModal from './components/SpeakerModal.vue'
 const app = useApp()
 
 function parseHash() {
+  // 地址栏仅承载三个主页面，席位弹窗属于临时编辑状态，不写入路由。
   const page = location.hash.replace(/^#\/?/, '').split('/')[0]
   app.view = page === 'humans' ? 'humans' : page === 'settings' ? 'settings' : 'round'
 }
 
 function syncHash() {
+  // 双向同步先比较值，避免状态变化与 hashchange 相互重复触发导航。
   const hash = `#/${app.view}`
   if (location.hash !== hash) location.hash = hash
 }
@@ -23,6 +25,7 @@ function syncHash() {
 watch(() => app.view, syncHash)
 
 onMounted(async () => {
+  // 先还原用户刷新前所在页面，再加载页面依赖的共享概况。
   parseHash()
   window.addEventListener('hashchange', parseHash)
   await app.boot()

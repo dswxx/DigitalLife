@@ -7,10 +7,10 @@ from collections.abc import Iterable, Iterator
 
 
 def iter_sse_data(chunks: Iterable[bytes | str]) -> Iterator[str]:
-    """把 SSE 字节流切成一个个 `data:` 载荷（不含前缀和换行）。
+    """【核心】将上游网络块还原为 data 行，服务于一行一个 JSON 的模型流。
 
-    非 `data:` 的行（`event:`、`id:`、注释、心跳空行）一律丢掉——
-    我们只关心正文，其余交给各自的解析器按类型处理。
+    一个 UTF-8 字符和一行文本都可能跨块；解码器保留半个字符，buf 保留半行。
+    其他行忽略；本函数不实现将多条 data 行合并成一个多行 SSE 事件。
     """
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     buf = ""

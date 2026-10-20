@@ -12,7 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def free_port(preferred: int) -> tuple[int, bool]:
-    """优先用你指定的端口；被占了就换一个。返回 `(端口, 是不是换过)`。"""
+    """尝试首选端口及附近端口，最后让系统分配；返回（端口，是否更换）。
+
+    这里只做启动前探测，不长期占用端口；真正监听由随后启动的 Uvicorn 完成。
+    """
     for candidate in [preferred] + list(range(preferred + 1, preferred + 20)):
         with socket.socket() as s:
             try:
@@ -26,6 +29,7 @@ def free_port(preferred: int) -> tuple[int, bool]:
 
 
 def main() -> int:
+    """初始化配置与预设，再将绝对数据路径交给应用；不会预读聊天历史。"""
     ap = argparse.ArgumentParser(description="启动数字生命")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--data", default=str(Path(__file__).resolve().parent / "data"),
@@ -47,7 +51,7 @@ def main() -> int:
     data_dir = Path(args.data).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # 第一次跑：把内置人格模板播进去（幂等，随时可以再跑）
+    # 启动时补齐缺失的内置人格，已有同 ID 文件保持不动。
     added = templates.seed(data_dir)
     if added:
         print(f"播了 {added} 份内置人格模板")
@@ -81,6 +85,8 @@ def main() -> int:
     print()
 
     if args.reload:
+        # 热重载会重新导入模块，通过环境变量把同一数据目录交给新进程。
+        # 仅监视 server，避免追加聊天记录触发重启。
         os.environ["DL_DATA_DIR"] = str(data_dir)
         uvicorn.run("server.main:app", host="127.0.0.1", port=port, log_level="warning",
                     reload=True, app_dir=str(Path(__file__).resolve().parent),

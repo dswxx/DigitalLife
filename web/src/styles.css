@@ -1,3 +1,5 @@
+/* 全局样式按主题、布局、聊天、管理页面和弹窗分区。
+   主题只覆盖变量，组件使用同一套颜色与尺寸规则。 */
 :root {
   --bg: #f5f4f1;
   --bg-1: #ffffff;
@@ -211,6 +213,7 @@
   --scroll-thumb-hover: #3b4860;
 }
 
+/* 基础布局：页面不整体滚动，侧栏、聊天列表和管理页各自管理滚动区域。 */
 * {
   box-sizing: border-box;
 }
@@ -261,6 +264,7 @@ select {
   height: 100vh;
 }
 
+/* 侧栏：品牌、会话列表、主页面导航与本机主题切换。 */
 .sidebar {
   background: var(--bg-1);
   border-right: 1px solid var(--border-soft);
@@ -416,6 +420,7 @@ select {
   text-align: center;
 }
 
+/* 主区：聊天页使用固定头尾与中间滚动，管理页通过 stage-scroll 独立滚动。 */
 .stage {
   min-width: 0;
   min-height: 0;
@@ -452,6 +457,7 @@ select {
   font-size: 13px;
 }
 
+/* 通用控件：按钮、表单、卡片与状态提示，供页面和弹窗共用。 */
 .btn {
   border: 1px solid var(--border);
   background: var(--bg-2);
@@ -606,6 +612,7 @@ select {
   color: var(--err);
 }
 
+/* 聊天页：标题、参与者、逐轮问答与固定输入区。 */
 .thread-head {
   display: flex;
   align-items: center;
@@ -967,6 +974,7 @@ select {
   flex-wrap: wrap;
 }
 
+/* 回答正文：对应 md.ts 生成的受控 Markdown 标签，与原始 HTML 转义逻辑配合。 */
 .md > *:first-child {
   margin-top: 0;
 }
@@ -1075,6 +1083,7 @@ select {
   background: var(--bg-2);
 }
 
+/* 人格库与平台设置：按网格展示蓝图、实体和平台。 */
 .grid-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
@@ -1193,6 +1202,7 @@ select {
   line-height: 1.5;
 }
 
+/* 席位编辑：先按平台分组，再展示该平台下尚可加入的实体。 */
 .pick-cats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
@@ -1295,6 +1305,7 @@ select {
   font-weight: 700;
 }
 
+/* 通用弹窗：遮罩覆盖主页面，内容区域独立滚动。 */
 .modal-mask {
   position: fixed;
   inset: 0;
@@ -1481,6 +1492,7 @@ select {
   border-top: 1px solid var(--border-soft);
 }
 
+/* 主题选择使用 data-theme 属性，具体色值集中在文件开头的变量块。 */
 .theme-row {
   border-top: 1px solid var(--border-soft);
   padding: 12px 14px 14px;
@@ -1540,6 +1552,7 @@ select {
   border-radius: 50%;
 }
 
+/* 窄窗口只调整主要布局尺寸，不改变聊天事件和组件状态。 */
 @media (max-width: 900px) {
   .app {
     grid-template-columns: 1fr;

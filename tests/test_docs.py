@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class DocsTests(unittest.TestCase):
+    """只检查当前发布文档与启动文件，防止引用已删除路径或出现版本不一致。"""
     def test_current_document_links(self):
         for name in ("README.md", "docs/开发指南.md", "docs/系统设计.md"):
             path = ROOT / name

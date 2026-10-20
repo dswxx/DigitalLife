@@ -1,6 +1,6 @@
 {
   "name": "digitallife-web",
-  "version": "0.12.0",
+  "version": "0.14.0",
   "private": true,
   "type": "module",
   "description": "一次提问比较多个 AI，也可以与有独立记忆的数字人交流",

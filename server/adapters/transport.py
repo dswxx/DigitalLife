@@ -15,7 +15,9 @@ class HttpxTransport:
         self._client = httpx.Client(follow_redirects=False)
 
     def open_stream(self, *, url: str, headers: dict, body: dict, timeout: float) -> Opened:
-        # timeout 参数是"多久没数据算卡住"；连接和写入各给 30 秒足够
+        """先返回响应头，正文通过生成器读取，避免等待整段回答才交给上层。"""
+        # read 超时是相邻两次接收的间隔，不是整次生成的总时长。
+        # connect/write/pool 另设 30 秒，分别覆盖连接、发送和连接池等待。
         limits = httpx.Timeout(connect=30.0, read=max(1.0, float(timeout)), write=30.0, pool=30.0)
         try:
             req = self._client.build_request("POST", url, headers=headers, json=body, timeout=limits)
@@ -25,6 +27,7 @@ class HttpxTransport:
         except Exception as e:  # noqa: BLE001
             raise AdapterError(502, friendly_network_error(e, {"label": "平台"})) from e
 
+        # 失败响应读完错误正文后立即关闭，随后上层才能安全选择是否兼容重试。
         if not (200 <= resp.status_code < 300):
             try:
                 text = resp.read().decode("utf-8", "replace")
@@ -43,11 +46,13 @@ class HttpxTransport:
             except Exception as e:  # noqa: BLE001
                 raise AdapterError(502, friendly_network_error(e, {"label": "平台"})) from e
             finally:
+                # 流正常结束或读取报错都归还连接，避免长时间运行后耗尽连接池。
                 resp.close()
 
         return Opened(status=resp.status_code, chunks=chunks())
 
     def get_json(self, *, url: str, headers: dict, timeout: float) -> tuple[int, str]:
+        """模型列表等短响应一次读取，返回原始状态和文本供协议层解释。"""
         try:
             resp = self._client.get(url, headers=headers, timeout=timeout)
         except httpx.TimeoutException as e:

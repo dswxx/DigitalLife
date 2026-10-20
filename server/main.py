@@ -1,4 +1,7 @@
-"""HTTP 接口、本机访问控制、NDJSON 事件流与前端静态资源托管。"""
+"""HTTP 边界：访问校验、管理接口、NDJSON 流和构建后前端的托管。
+
+聊天业务交给 chat，文件与运行时状态交给 Runtime；本模块负责请求和响应形状。
+"""
 
 from __future__ import annotations
 
@@ -59,6 +62,8 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
     """创建应用，数据目录和访问令牌可注入以便测试。"""
     @asynccontextmanager
     async def lifespan(app):
+        # 【核心】每个应用实例持有一份 Runtime 和一个可被多线程复用的 HTTP 客户端。
+        # 退出生命周期时关闭连接池，测试也使用相同的初始化与清理流程。
         app.state.runtime = Runtime(app.state.data_dir)
         transport = HttpxTransport()
         app.state.transport = transport
@@ -138,6 +143,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
     @app.post("/api/settings")
     def post_settings(request: Request, payload: dict = Body(...)):
         """局部更新设置；未传入的字段保持原值，密钥掩码不覆盖实际密钥。"""
+        # 必须区分“未传 providers”和“传空列表”：前者保留，后者删除全部平台。
         saved = request.app.state.runtime.update_settings(
             providers=(payload.get("providers") or []) if "providers" in payload else None,
             advanced=payload.get("advanced"), model_info=payload.get("modelInfo"),
@@ -153,6 +159,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
             raise HTTPException(404, f"没有这家平台：{provider_id}")
         got = list_models(prov, transport=request.app.state.transport)
         stamp = int(time.time() * 1000)
+        # 基于保存时的最新配置修改这一家，避免较慢的网络请求覆盖其他配置更新。
         request.app.state.runtime.update_settings(providers=lambda providers: [
             {**p, "models": got, "modelsFetchedAt": stamp} if p.get("id") == provider_id else p
             for p in providers
@@ -206,6 +213,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.delete("/api/templates/{template_id}")
     def delete_template(request: Request, template_id: str):
+        """在仍有实体引用时拒绝删除，避免产生失去人格来源的实体。"""
         data_dir = _data_dir(request)
         users = [l for l in request.app.state.runtime.lives.values()
                  if l.identity.get("templateId") == template_id]
@@ -227,6 +235,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.post("/api/lives")
     def create_life(request: Request, payload: dict = Body(...)):
+        """从已有的人格与平台创建实体，只保存绑定和身份，不复制人格正文。"""
         data_dir = _data_dir(request)
         tpl = request.app.state.runtime.templates.get(payload.get("templateId") or "")
         if tpl is None:
@@ -279,6 +288,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
         rt = request.app.state.runtime
         rt.ensure_idle(session_id)
         original = rt.sessions.get(session_id)
+        # 先编辑副本，保存成功后才替换运行时对象，避免失败操作提前污染当前状态。
         s = sessions.Session.from_json(original.to_json()) if original else None
         if s is None:
             raise HTTPException(404, f"没有这次对话：{session_id}")
@@ -299,6 +309,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.get("/api/sessions/{session_id}/messages")
     def session_messages(request: Request, session_id: str, before: str = "", limit: int = 3):
+        """只从会话完整原文分页，展示不依赖当前实体是否仍存在。"""
         rt = request.app.state.runtime
         if session_id not in rt.sessions:
             raise HTTPException(404, "没有这次对话")
@@ -309,9 +320,10 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
     @app.post("/api/ask")
     def ask(request: Request, payload: dict = Body(...)):
-        """流式回答。返回 NDJSON：一行一个事件，前端读一行贴一行。
+        """【核心】将 chat 的统一事件编码成 NDJSON，一行一个 JSON 对象。
 
-        用 NDJSON 而不是 WebSocket：单向、能穿代理、断了就是断了，没有心跳要维护。
+        上游模型使用 SSE，本接口使用 NDJSON，两种流的解析边界不同。
+        响应开始后，后续错误通过流内 error 事件报告，不能再改变 HTTP 状态码。
         """
         data_dir = _data_dir(request)
         st = _settings(request)
@@ -326,6 +338,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
                     transport=request.app.state.transport,
                     runtime=request.app.state.runtime,
                 ):
+                    # 换行是事件边界；一次网络读取可能包含半行或多行，前端负责缓冲。
                     yield (json.dumps(evt, ensure_ascii=False) + "\n").encode("utf-8")
             except AdapterError as e:
                 yield (json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n").encode("utf-8")
@@ -363,6 +376,7 @@ def create_app(data_dir=None, *, token: str | None = None) -> FastAPI:
 
 
 def _serve_index(token: str) -> str:
+    """向构建产物注入当前启动令牌；令牌不能写入版本库或长期缓存的 JS 文件。"""
     index = WEB_DIR / "index.html"
     if not index.exists():
         return (

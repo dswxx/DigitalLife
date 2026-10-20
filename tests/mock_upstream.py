@@ -15,6 +15,7 @@ LOCK = threading.Lock()
 
 
 def set_script(model: str, **kw) -> None:
+    """按模型配置正文、错误、分块和延迟，使测试场景可重复。"""
     SCRIPT[model] = kw
 
 
@@ -28,6 +29,7 @@ def reset() -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
+    """只实现测试所需的模型列表与 OpenAI 兼容流，不转发到任何外部平台。"""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 别把每个请求都打到测试输出里
@@ -66,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
         model = body.get("model") or ""
         script = SCRIPT.get(model, {})
 
-        # ── 按剧本先失败：验"能自愈的报错" ──
+        # 参数拒绝发生在流开始前，供适配器的输出额度兼容重试测试使用。
         reject = script.get("reject_keys") or []
         if "max_tokens" in reject and (body.get("max_tokens") or 0) > int(script.get("max_ok") or 8192):
             self._json(400, {"error": {"message":
@@ -79,6 +81,15 @@ class Handler(BaseHTTPRequestHandler):
         text = script.get("text") or f"（{model} 的回答）"
         reasoning = script.get("reasoning") or ""
         finish = script.get("finish") or "stop"
+        system = body.get("system") or next((m.get("content", "") for m in body.get("messages", []) if m.get("role") == "system"), "")
+        # 由假上游按实际请求长度拒绝，应用不读取这个限制，也不按它预裁剪。
+        if script.get("context_chars") and sum(len(m.get("content", "")) for m in body.get("messages", [])) > script["context_chars"]:
+            self._json(400, {"error": {"code": "context_length_exceeded", "message": "Maximum context length exceeded"}})
+            return
+        if "你负责压缩对话上下文" in system and "summary_text" in script:
+            text = script["summary_text"]
+            reasoning = ""
+            finish = script.get("summary_finish") or "stop"
 
         # 先把**整条流**拼成字节，再按固定块长发出去。
         # 切点于是会落在 JSON 里中文的 UTF-8 字节中间——真实网络里就是这样。

@@ -46,6 +46,7 @@ async function loadModels() {
       provider.models = got.models
       provider.modelsFetchedAt = got.modelsFetchedAt
     }
+    // 拉取期间可能换了平台；只给仍在编辑的同一家补默认模型。
     if (providerId.value === id && !model.value && got.models.length) model.value = got.models[0].id
   } catch (e) {
     problem.value = (e instanceof Error ? e.message : String(e)) + '（可以在下面手动填模型名）'
@@ -55,6 +56,8 @@ async function loadModels() {
 }
 
 async function create() {
+  // 自写模式先保存可复用人格，再创建独立实体；选已有蓝图时只提交引用。
+  // created 交给父页面决定如何加入会话，本组件只负责创建与关闭。
   busy.value = true
   problem.value = ''
   try {

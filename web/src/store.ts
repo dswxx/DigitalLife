@@ -1,4 +1,8 @@
-/** 跨页面状态：启动数据、当前对话、提问对象与问答轮次。组件局部状态留在组件内。 */
+/**
+ * 跨页面状态与交互流程；组件中的表单草稿、展开状态不放进这里。
+ * 服务端文件是持久化来源，seats / rounds 是当前页面的展示模型。
+ * 阅读聊天链路：boot → loadRounds → sendQuestion → applyEvent。
+ */
 
 import { defineStore } from 'pinia'
 import { api, ask, API_VERSION, type LifeSummary, type Provider, type ProviderPreset, type Seat, type Session, type StreamEvent, type Template } from './api'
@@ -12,7 +16,7 @@ export interface SeatConfig {
   model: string
 }
 
-/** 某一位在这一轮里的回答。 */
+/** 某位在特定轮次中的展示快照，不能随当前席位编辑而改变历史身份。 */
 export interface AnswerView {
   seatNo: number
   lifeId: string
@@ -62,7 +66,8 @@ export const useApp = defineStore('app', {
     loading: false,
     hasMoreRounds: false,
     historyBefore: '',
-    historyRequest: 0,
+    historyRequest: 0, // 单调请求序号：慢历史响应不能覆盖后来切换到的会话。
+    // 单独持有接收中的轮次，即使用户切换会话，旧流仍更新它原来的对象。
     streamRound: null as RoundView | null,
     streamSessionId: '',
 
@@ -100,6 +105,7 @@ export const useApp = defineStore('app', {
   },
 
   actions: {
+    /** 一次加载概况，校验接口版本，再打开最近会话的历史。 */
     async boot() {
       try {
         const b = await api.bootstrap()
@@ -154,7 +160,7 @@ export const useApp = defineStore('app', {
       await this.setSeats(next.map((s) => ({ lifeId: s.lifeId, model: s.model })))
     },
 
-    /** 开一次对话：有就用当前这次，没有就新建一次。 */
+    /** 优先复用当前会话，其次已有首个会话；确实没有时才创建空会话。 */
     async ensureSession(): Promise<Session> {
       const found = this.sessions.find((s) => s.id === this.currentSessionId)
       if (found) return found
@@ -171,6 +177,7 @@ export const useApp = defineStore('app', {
     },
 
     syncSeatsFromSession() {
+      // 当前实体信息只用于编辑区；旧回答的名字、模型来自各轮自己的快照。
       const s = this.currentSession
       this.seats = (s?.seats ?? []).map((seat) => {
         const life = this.lifeById(seat.lifeId)
@@ -184,6 +191,7 @@ export const useApp = defineStore('app', {
       })
     },
 
+    /** 保存成功后才替换席位；后端还会检查本轮是否仍在后台进行。 */
     async setSeats(next: Array<{ lifeId: string; model?: string }>) {
       if (this.roundRunning) throw new Error('等这一轮回答结束后再调整提问对象')
       const session = await this.ensureSession()
@@ -207,7 +215,7 @@ export const useApp = defineStore('app', {
       this.historyBefore = ''
     },
 
-    /** 直接读取会话原文分页；历史参与者和回答不依赖当前座位。 */
+    /** 【核心】按轮次读取历史，丢弃过期响应，并保留当前接收中的流式轮次。 */
     async loadRounds(limit = 3, older = false) {
       const sessionId = this.currentSessionId
       if (!sessionId) {
@@ -218,6 +226,7 @@ export const useApp = defineStore('app', {
       this.loading = true
       try {
         const page = await api.sessionMessages(sessionId, limit, older ? this.historyBefore : '')
+        // 请求发出后可能切换会话或再次翻页；旧响应不应覆盖新的展示状态。
         if (this.currentSessionId !== sessionId || request !== this.historyRequest) return
         const loaded: RoundView[] = page.rounds.map((r) => ({
           id: r.id, t: r.t, question: r.question,
@@ -234,6 +243,7 @@ export const useApp = defineStore('app', {
           this.rounds = [...loaded.filter((r) => !existing.has(r.id)), ...this.rounds]
         } else {
           this.rounds = loaded
+          // 重新加载历史时保留同会话正在接收的对象，避免新到的流事件写入不可见旧对象。
           if (this.streamSessionId === sessionId && this.streamRound) {
             const live = this.streamRound
             this.rounds = this.rounds.filter((r) => r.id !== live.id)
@@ -249,7 +259,7 @@ export const useApp = defineStore('app', {
       }
     },
 
-    /** 问一句：先把这一轮的空位摆好（卡片立刻出现），再往里填字。 */
+    /** 【核心】先建立本轮卡片，再发送一次请求，将交错事件写入固定轮次对象。 */
     async sendQuestion() {
       const q = this.question.trim()
       if (!q || this.roundRunning || !this.seats.length) return
@@ -281,6 +291,7 @@ export const useApp = defineStore('app', {
       this.streamSessionId = session.id
       this.roundRunning = true
       this.question = ''
+      // 捕获 live，不在回调里重新取“当前最后一轮”，避免切换会话后写错位置。
       const { done, stop } = ask({ sessionId: session.id, question: q }, (evt) => this.applyEvent(evt, live))
       this.stopRound = stop
       try {
@@ -293,6 +304,7 @@ export const useApp = defineStore('app', {
           if (answer.running) answer.error = message
         }
       } finally {
+        // 连接结束不一定收到所有完成事件，仍在 running 的卡片必须明确显示未正常收尾。
         this.roundRunning = false
         this.streamRound = null
         this.streamSessionId = ''
@@ -308,10 +320,12 @@ export const useApp = defineStore('app', {
       }
     },
 
+    /** 【核心】按 seatNo 定位回答；增量事件追加内容，完成事件用保存后的结果校准。 */
     applyEvent(evt: StreamEvent, rnd: RoundView | null) {
       const ans = rnd?.answers.find((a) => a.seatNo === evt.seatNo)
       switch (evt.type) {
         case 'round_start':
+          // 本地先显示的临时轮次在这里获得服务端的正式 ID 和时间。
           if (rnd) { rnd.id = evt.roundId ?? rnd.id; rnd.t = evt.at ?? rnd.t }
           break
         case 'seat_start':
@@ -331,6 +345,7 @@ export const useApp = defineStore('app', {
           if (ans && evt.text && !ans.notices.includes(evt.text)) ans.notices.push(evt.text)
           break
         case 'seat_done':
+          // 完成事件包含完整回答，用最终结果替换增量拼接，避免中间状态残留。
           if (ans) {
             ans.running = false
             ans.text = evt.content ?? ans.text
@@ -349,6 +364,7 @@ export const useApp = defineStore('app', {
             ans.running = false
             ans.error = evt.message ?? '出错了'
           } else if (evt.message) {
+            // 无 seatNo 表示整轮错误，只影响尚未结束的回答，保留已完成的内容。
             for (const answer of rnd?.answers ?? []) {
               if (answer.running) {
                 answer.error = evt.message
@@ -363,6 +379,7 @@ export const useApp = defineStore('app', {
     },
 
     stop() {
+      // 只取消当前 fetch；后台继续保存，下一次提问仍由服务端的整轮锁判断是否可用。
       this.stopRound?.()
     },
   },

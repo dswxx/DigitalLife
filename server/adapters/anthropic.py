@@ -11,6 +11,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 def build_plan(provider: dict, *, model: str, system: str | None, messages: list[dict],
                max_tokens: int = DEFAULT_MAX_TOKENS) -> StreamPlan:
+    """Anthropic 的 system 是请求顶层字段，messages 只保留 user/assistant。"""
     body = {
         "model": model,
         "max_tokens": max_tokens,
@@ -66,11 +67,12 @@ def parse_event(evt: dict) -> list[dict]:
 
 
 def is_done(data: str) -> bool:
-    """Anthropic 用 `message_stop` 事件表示结束，没有 `[DONE]`。"""
+    """无文本哨兵；message_stop 作为 JSON 经过解析，统一入口继续读到流结束。"""
     return False
 
 
 def decode(data: str) -> dict | None:
+    """只接收对象载荷；事件类型的具体差异由 parse_event 处理。"""
     try:
         got = json.loads(data)
     except (json.JSONDecodeError, TypeError):

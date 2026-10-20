@@ -7,7 +7,7 @@ rem code page (936 on a Chinese Windows) while the file itself is
 rem UTF-8: the multi-byte characters get mis-decoded and cmd eats
 rem the first characters of the next token ("echo" becomes "o").
 rem That is why this launcher contains ASCII only, and all Chinese
-rem text is printed by Python (run.py). dev/test_docs.py checks it.
+rem text is printed by Python (run.py). tests/test_docs.py checks it.
 rem ---------------------------------------------------------------
 chcp 65001 >nul
 cd /d "%~dp0"

@@ -196,9 +196,7 @@
     "version": 1,
     "providers": [],
     "advanced": {
-      "maxTokens": 8192,
-      "contextWindow": 0
+      "maxTokens": 8192
     }
-  },
-  "defaultContextWindow": 128000
+  }
 }

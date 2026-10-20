@@ -8,11 +8,12 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server.adapters import AdapterError, list_models, stream_chat
-from server.adapters.core import IDLE_MS, Opened, normalize_base, parse_max_tokens_limit
+from server.adapters.core import IDLE_MS, Opened, is_context_limit, normalize_base, parse_max_tokens_limit
 from server.adapters.sse import iter_sse_data
 
 
 class Transport:
+    """顺序消费预设响应，保留实际请求；两字节分块刻意切断中文 UTF-8 字符。"""
     def __init__(self, steps=None):
         self.steps = list(steps or [{}])
         self.requests = []
@@ -33,6 +34,7 @@ class Transport:
 
 
 class AdapterTests(unittest.TestCase):
+    """从请求内容和事件结果验证协议，不依赖真实平台的模型列表或可用性。"""
     provider = {"kind": "openai", "baseUrl": "https://example.com", "apiKey": "test"}
 
     def call(self, transport, provider=None, **kw):
@@ -114,6 +116,45 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(AdapterError):
                 normalize_base(bad)
         self.assertEqual(parse_max_tokens_limit("max_tokens: 9000 > 8192"), 8192)
+
+    def test_context_error_classification_uses_codes_and_explicit_messages(self):
+        for text in (
+            json.dumps({"error": {"code": "context_length_exceeded", "message": "rejected"}}),
+            "This model's maximum context length is 8192 tokens. You requested 10000 with max_tokens.",
+            "prompt is too long: 10000 tokens > 8192 maximum",
+            "Input tokens exceed the model context window",
+            "输入内容超过上下文限制",
+        ):
+            for status in (400, 413, 422):
+                self.assertTrue(is_context_limit(status, text), (status, text))
+        for text in ("valid range of max_tokens is [1, 1024]", "Request body too large",
+                     "length must be positive", "token quota exceeded", "context service unavailable",
+                     "input tokens per minute limit exceeded"):
+            self.assertFalse(is_context_limit(400, text), text)
+        self.assertFalse(is_context_limit(429, "input too long"))
+
+    def test_context_overflow_does_not_enter_output_parameter_retry(self):
+        tr = Transport([{"status": 400, "error":
+                         "This model's maximum context length is 8192 tokens. Reduce messages or max_tokens."}])
+        with self.assertRaises(AdapterError) as caught:
+            self.call(tr)
+        self.assertEqual(caught.exception.kind, "context_limit")
+        self.assertEqual(len(tr.requests), 1)
+
+    def test_output_retry_can_expose_a_context_limit(self):
+        tr = Transport([{"status": 400, "error": "valid range of max_tokens is [1, 1024]"},
+                        {"status": 400, "error": "prompt is too long"}])
+        with self.assertRaises(AdapterError) as caught:
+            self.call(tr)
+        self.assertEqual(caught.exception.kind, "context_limit")
+        self.assertEqual(len(tr.requests), 2)
+
+    def test_sse_context_errors_preserve_classification_for_both_protocols(self):
+        for kind, error in (("openai", {"error": {"code": "context_length_exceeded", "message": "rejected"}}),
+                            ("anthropic", {"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long"}})):
+            with self.assertRaises(AdapterError) as caught:
+                self.call(Transport([{"events": [error]}]), {**self.provider, "kind": kind})
+            self.assertEqual(caught.exception.kind, "context_limit")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def main():
+    """每套测试独立运行并汇总退出码；--unit 不起服务，--ui 额外驱动浏览器。"""
     parser = argparse.ArgumentParser(description="运行数字生命测试")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--unit", action="store_true", help="只运行无需网络的测试")
@@ -23,6 +24,7 @@ def main():
             continue
         if path.stem == "test_http" and args.unit:
             continue
+        # 复用调用本命令的 Python 和 UTF-8 模式，避免 Windows 默认编码干扰中文断言。
         command = [sys.executable, "-X", "utf8", str(path)]
         if path.stem == "test_ui" and args.cdp_port:
             command += ["--cdp-port", str(args.cdp_port)]

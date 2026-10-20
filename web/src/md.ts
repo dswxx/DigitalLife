@@ -1,4 +1,4 @@
-/** 轻量 Markdown 渲染。先转义 HTML，再识别受支持的格式与安全链接。 */
+/** 轻量 Markdown 子集：先转义 HTML，再生成受控标签；不执行模型输出的 HTML。 */
 
 function escapeHtml(s: string): string {
   return s
@@ -9,6 +9,7 @@ function escapeHtml(s: string): string {
 }
 
 function inline(s: string): string {
+  // 只接收已经转义的文本；这里生成的 code / strong / em 是程序控制的标签。
   return s
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -17,11 +18,12 @@ function inline(s: string): string {
 }
 
 export function renderMarkdown(src: string): string {
+  // 【核心】先转义再解析顺序不能颠倒，ChatView 会通过 v-html 插入返回值。
   const text = escapeHtml((src ?? '').replace(/\r\n/g, '\n'))
   const lines = text.split('\n')
   const out: string[] = []
   let list: 'ul' | 'ol' | null = null
-  let inCode = false
+  let inCode = false // 围栏代码块内跳过其他 Markdown 规则，保持代码的原始文本结构。
   let para: string[] = []
 
   const flushPara = () => {
@@ -99,6 +101,7 @@ export function renderMarkdown(src: string): string {
   }
   flushPara()
   closeList()
+  // 流式文本可能暂时缺少闭合围栏，补齐标签以免影响后面的页面布局。
   if (inCode) out.push('</code></pre>')
   return out.join('\n')
 }

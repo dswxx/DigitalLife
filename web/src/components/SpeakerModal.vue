@@ -19,6 +19,7 @@ const fetching = ref(false)
 const problem = ref('')
 
 function available(id: string): boolean {
+  // 同一会话不能重复加入同一个实体；编辑当前席位时允许保留原来的实体。
   return !app.seats.some((s) => s.lifeId === id && s.seatNo !== app.modalSeat)
 }
 
@@ -90,7 +91,7 @@ function pickCat(key: string) {
 function pickLife(id: string) {
   lifeId.value = id
   const life = app.lives.find((l) => l.id === id)
-  // 席位上的模型**默认跟着人走**；只有人自己没有默认模型时才需要在这儿挑
+  // 选人时先用实体默认模型；下方高级设置仍可覆盖本次会话的模型。
   model.value = life?.model || ''
 }
 
@@ -115,6 +116,7 @@ async function reloadModels() {
 }
 
 async function apply() {
+  // 保留其他席位的模型覆盖值，统一由 store 保存并重新编号；不修改实体默认模型。
   if (!lifeId.value) {
     problem.value = '先选一位数字人'
     return

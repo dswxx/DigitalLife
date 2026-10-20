@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from websockets.sync.client import connect
 from server.main import create_app
 from tests import mock_upstream as mock
-from tests.support import ROOT, free_port, running_server, seed_data
+from tests.support import ROOT, fill_history, free_port, running_server, seed_data
 
 BROWSERS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -43,6 +43,7 @@ class Browser:
 
     @classmethod
     def launch(cls, profile: Path, port: int) -> "Browser":
+        """独立无界面浏览器使用测试专属用户目录，不复用个人浏览器资料。"""
         exe = next((p for p in BROWSERS if Path(p).exists()), "")
         if not exe:
             raise RuntimeError("找不到 Chrome 或 Edge")
@@ -179,6 +180,7 @@ class Browser:
 
 
 def main():
+    """创建合成数据与假上游，从真实 DOM 验证完整聊天路径及页面导航。"""
     with ExitStack() as stack:
         root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".tmp-ui-", dir=ROOT / "tests")))
         mock.reset()
@@ -188,7 +190,8 @@ def main():
         lives, session = seed_data(root, f"http://127.0.0.1:{upstream.server_port}/v1")
         mock.set_script("model-a", text="浏览器甲回答 <script>危险脚本</script>", reasoning="先想清楚问题")
         mock.set_script("model-b", text="浏览器乙回答")
-        url = stack.enter_context(running_server(create_app(root, token="ui-test-token")))
+        app = create_app(root, token="ui-test-token")
+        url = stack.enter_context(running_server(app))
         if "--cdp-port" in sys.argv:
             browser = Browser.attach(int(sys.argv[sys.argv.index("--cdp-port") + 1]))
         else:
@@ -228,8 +231,18 @@ def main():
         assert browser.click_text('.composer button', '发给这几位')
         assert browser.wait_for("document.querySelectorAll('.answer-body').length === 1 && !document.querySelector('.answer .pill')")
         assert mock.requests_for('model-a')[-1]['body']['messages'] == [{"role": "user", "content": "普通模型的新问题"}]
+        # 假上游拒绝过长请求，验证超限保护与压缩进度，而非应用预估窗口。
+        runtime = app.state.runtime
+        runtime.update_settings(advanced={"maxTokens": 256})
+        current = next(s for s in runtime.sessions.values() if s.id != session.id)
+        fill_history(runtime, current)
+        mock.set_script("model-a", context_chars=1000, text="压缩后仍能继续交流", summary_text="本会话已经讨论的主要问题。")
+        assert browser.type('.composer textarea', '请接着讨论')
+        assert browser.click_text('.composer button', '发给这几位')
+        assert browser.wait_for("[...document.querySelectorAll('.answer-note')].some(e => e.innerText.includes('压缩完成'))")
+        assert browser.wait_for("document.querySelector('.answers') && document.body.innerText.includes('压缩后仍能继续交流') && !document.querySelector('.answer .pill')")
         assert not browser.logs, f"浏览器控制台报错：{browser.logs}"
-        print("浏览器通过：流式回答、历史重载、页面导航、选人、普通模型隔离与 HTML 转义")
+        print("浏览器通过：流式回答、历史重载、页面导航、选人、普通模型隔离、HTML 转义与自动压缩")
     return 0
 
 

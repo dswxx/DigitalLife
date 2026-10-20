@@ -9,7 +9,7 @@ from .core import DEFAULT_MAX_TOKENS, StreamPlan, endpoint
 
 def build_plan(provider: dict, *, model: str, system: str | None, messages: list[dict],
                max_tokens: int = DEFAULT_MAX_TOKENS) -> StreamPlan:
-    """组装请求。**system 单独放在 messages 最前面**（这一套协议就是这么表达人格的）。"""
+    """OpenAI 兼容协议把人格作为 messages 首条 system；无人格时不添加该消息。"""
     body = {
         "model": model,
         "stream": True,
@@ -48,6 +48,7 @@ def parse_event(evt: dict) -> list[dict]:
             out.append({"type": "reasoning", "text": reasoning})
         if delta.get("content"):
             out.append({"type": "text", "text": delta["content"]})
+    # 用量可能出现在独立的末尾事件中，此时 choices 可以是空数组。
     usage = evt.get("usage")
     if usage:
         out.append({"type": "usage", "usage": {
@@ -63,8 +64,7 @@ def is_done(data: str) -> bool:
 
 
 def decode(data: str) -> dict | None:
-    """解析一条载荷。**解析失败就返回 None 并跳过**——上游偶尔会插心跳或半截数据，
-    为这个中断整段回答不值得。"""
+    """忽略非对象或无法解析的载荷；网络块的字符和行边界已经由 SSE 层处理。"""
     try:
         got = json.loads(data)
     except (json.JSONDecodeError, TypeError):

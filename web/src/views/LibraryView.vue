@@ -55,6 +55,7 @@ async function chatWith(lifeId: string) {
 }
 
 async function saveTemplate() {
+  // 后端更新人格可能改变其内容 ID，并同步实体引用，所以两份概况都需要刷新。
   if (!editing.value) return
   try {
     await api.updateTemplate(editing.value.id, {

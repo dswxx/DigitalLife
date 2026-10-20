@@ -1,5 +1,6 @@
 /** 类型化 HTTP 客户端与 NDJSON 流解析。令牌和 fetch 统一放在这里。 */
 
+/** 平台配置：读取时 apiKey 为掩码；编辑提交时也可包含用户刚输入的新密钥。 */
 export interface Provider {
   id: string
   name: string
@@ -26,6 +27,7 @@ export interface ProviderPreset {
   consoleUrl?: string
 }
 
+/** 可复用人格；bare 表示普通 AI，请求时省略人格并按会话隔离历史。 */
 export interface Template {
   id: string
   name: string
@@ -39,6 +41,7 @@ export interface Template {
   createdAt: number
 }
 
+/** 列表只使用轻量概况，完整个人历史由服务端按需加载。 */
 export interface LifeSummary {
   id: string
   name: string
@@ -52,6 +55,7 @@ export interface LifeSummary {
   lastTalkedAt: number
 }
 
+/** 当前会话的参与配置；lifeId 是持续身份，seatNo 是这一轮流事件的卡片编号。 */
 export interface Seat {
   seatNo: number
   lifeId: string
@@ -81,7 +85,7 @@ export interface Bootstrap {
   sessions: Session[]
 }
 
-/** 流里推过来的事件。每块都带 seatNo——几位同时答，字是交错来的。 */
+/** 参与者事件携带 seatNo；轮次事件和整轮错误可以不带，前端按 type 分派。 */
 export interface StreamEvent {
   type:
     | 'seat_start' | 'text' | 'reasoning' | 'notice' | 'limit'
@@ -110,6 +114,7 @@ declare global {
   }
 }
 
+// 后端在入口 HTML 中注入令牌；缺少注入时不伪造凭据，接口会明确拒绝请求。
 export const boot = window.__DL_BOOT__ ?? { apiVersion: 0, token: '', dataVersion: 0 }
 
 /** 后端接口版本和我们对不上的时候，说人话让人刷新，而不是抛一堆解析错。 */
@@ -124,6 +129,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // 普通 JSON 接口共用错误解析；聊天流在 ask 中单独逐行消费，不能整体 res.json()。
   const res = await fetch(path, {
     ...init,
     headers: {
@@ -181,9 +187,9 @@ export const api = {
 }
 
 /**
- * 问一句，边收边把事件交给 `onEvent`。
- *
- * 返回一个函数，调用它可以中途停掉这一轮（用户点了「停」）。
+ * 【核心】只发起一条后端请求，持续接收由多个模型事件汇合的 NDJSON 响应。
+ * done 表示接收结束；stop 取消浏览器接收，后台模型调用与保存仍继续。
+ * 网络块不等于消息边界：TextDecoder 保留半个 UTF-8 字符，buf 保留半行 JSON。
  */
 export function ask(
   payload: { sessionId: string; question: string },
@@ -211,7 +217,7 @@ export function ask(
       if (finished) break
       buf += decoder.decode(value, { stream: true })
       let idx: number
-      // 一行一个事件。**跨块切断是常态**，所以留了 buffer。
+      // 一次读取可能是半行或多行；完整行立即分派，余下内容留给下次读取。
       while ((idx = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, idx).trim()
         buf = buf.slice(idx + 1)
@@ -220,6 +226,7 @@ export function ask(
         }
       }
     }
+    // 结束时冲刷解码器，并兼容最后一个事件没有尾换行的响应。
     const tail = (buf + decoder.decode()).trim()
     if (tail) {
       onEvent(JSON.parse(tail) as StreamEvent)

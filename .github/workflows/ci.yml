@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 无需模型账户或真实聊天；各 Python 版本只运行合成数据的核心与协议检查。
   backend:
     name: 后端（Python ${{ matrix.python }}）
     runs-on: ubuntu-latest
@@ -27,6 +28,7 @@ jobs:
         run: python scripts/check.py --unit
 
   end-to-end:
+    # 应用和假上游通过真实本机 socket 互通，检验流式传输而非外部模型可用性。
     name: 端到端（真起服务 + 真流式）
     runs-on: ubuntu-latest
     steps:
@@ -40,6 +42,7 @@ jobs:
         run: python tests/test_http.py
 
   frontend:
+    # Vite 仅转译，必须单独运行 vue-tsc 才能发现组件和共享状态的类型错误。
     name: 前端（Node ${{ matrix.node }}）
     runs-on: ubuntu-latest
     strategy:
@@ -69,6 +72,7 @@ jobs:
         working-directory: web
 
   ui:
+    # 先构建后启动独立浏览器，访问的是后端实际托管的前端产物。
     name: 真浏览器
     runs-on: ubuntu-latest
     steps:
@@ -105,6 +109,7 @@ jobs:
         run: python tests/test_ui.py --cdp-port 9333
 
   scan:
+    # 同时检查当前源码与历史路径，避免仅靠 .gitignore 忽略已提交过的私有数据。
     name: 密钥泄漏扫描
     runs-on: ubuntu-latest
     steps:

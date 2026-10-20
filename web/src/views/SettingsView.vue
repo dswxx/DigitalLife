@@ -55,6 +55,7 @@ function presetFor(p: Provider): ProviderPreset | null {
 }
 
 function edit(p: Provider) {
+  // 在草稿副本中编辑，取消时不修改共享平台；模型数组也需要单独复制。
   draft.value = { ...p, models: [...(p.models ?? [])] }
   modelsText.value = (p.models ?? []).map((m) => m.id).join('\n')
   draftPreset.value = presetFor(p)
@@ -77,6 +78,7 @@ function addFrom(preset: ProviderPreset) {
 }
 
 async function saveDraft() {
+  // 提交的是整个平台列表；旧密钥的空值与掩码回传由后端合并时保留。
   const d = draft.value
   if (!d) return
   problem.value = ''
@@ -132,6 +134,7 @@ async function removeDraft() {
 }
 
 async function test(p: Provider) {
+  // 连接测试读取已保存的服务端配置，不发送草稿中的临时密钥或模型名。
   testing.value = p.id
   testResult.value[p.id] = ''
   try {

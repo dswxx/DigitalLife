@@ -1,4 +1,4 @@
-"""平台配置、密钥掩码与模型预算。运行时更新在锁内读取、合并、写入。"""
+"""平台配置、密钥掩码与输出上限。运行时更新在锁内读取、合并、写入。"""
 
 from __future__ import annotations
 
@@ -8,11 +8,8 @@ from . import presets, store
 MAX_OUTPUT_CEILING = 32768
 
 
-DEFAULT_WINDOW = presets.DEFAULT_CONTEXT_WINDOW
-
-
 def mask_key(key: str) -> str:
-    """密钥掩码。**接口只回掩码**——截图、录屏、贴给别人看都不会漏。"""
+    """向界面返回掩码；长密钥保留首尾片段用于辨认，短密钥全部遮盖。"""
     k = str(key or "")
     if not k:
         return ""
@@ -28,13 +25,13 @@ def is_masked(value: str) -> bool:
 
 
 def load(data_dir) -> dict:
-    """读设置。缺项用默认值补齐（**不是留空**——留空会让预算算不出来）。"""
+    """补齐默认配置；真实密钥只留在服务端对象中，响应使用 public_view。"""
     raw = store.read_json(data_dir / "settings.json", {})
     return {
         "version": int(raw.get("version") or presets.DATA_VERSION),
         "providers": list(raw.get("providers") or []),
         "advanced": {**presets.DEFAULT_SETTINGS["advanced"], **(raw.get("advanced") or {})},
-        # 从平台报错里学到的每个模型的上限/窗口
+        # 从平台报错里学到的输出上限；旧 contextWindow 字段不再参与请求。
         "modelInfo": dict(raw.get("modelInfo") or {}),
     }
 
@@ -52,7 +49,11 @@ def save(data_dir, settings: dict) -> dict:
 
 
 def update(data_dir, *, providers=None, advanced=None, model_info=None) -> dict:
-    """在同一把锁内读、合并、写，避免并发更新互相覆盖。"""
+    """在锁内读取最新配置再合并，避免较早请求覆盖用户刚保存的密钥。
+
+    providers=None 表示不更新平台；空列表表示删除全部平台。
+    也接受基于最新平台列表的函数，供拉取模型列表后局部更新使用。
+    """
     with store.lock_for(str((data_dir / "settings.json").resolve())):
         current = load(data_dir)
         if providers is not None:
@@ -79,7 +80,10 @@ def provider(settings: dict, provider_id: str) -> dict | None:
 
 
 def merge_providers(old: list[dict], incoming: list[dict]) -> list[dict]:
-    """合并平台列表。省略、空值或掩码形式的密钥保留原值。"""
+    """incoming 决定最终平台列表；省略、空值或掩码形式的密钥沿用原值。
+
+    只更新显示名称或模型列表时，浏览器无需也不应持有真实密钥。
+    """
     by_id = {p.get("id"): p for p in old}
     out = []
     for p in incoming:
@@ -91,38 +95,14 @@ def merge_providers(old: list[dict], incoming: list[dict]) -> list[dict]:
     return out
 
 
-# ─────────────────────────── 预算 ───────────────────────────
+# ─────────────────────────── 输出上限 ───────────────────────────
 
 
-def resolve_window(settings: dict, model: str) -> int:
-    """这个模型的上下文窗口有多大。
-
-    优先级：平台报过的 > settings.json 中指定的 > 保守猜的 128k。
-    """
-    info = (settings.get("modelInfo") or {}).get(model) or {}
-    from_api = info.get("contextWindow")
-    if isinstance(from_api, (int, float)) and from_api > 0:
-        return int(from_api)
-    manual = (settings.get("advanced") or {}).get("contextWindow")
-    if isinstance(manual, (int, float)) and manual > 0:
-        return int(manual)
-    return int(DEFAULT_WINDOW)
-
-
-def resolve_output_cap(settings: dict, model: str, window: int) -> int:
-    """返回设置值、平台上限与窗口三者允许的输出额度。
-
-    三者取最小：你设的值、平台学到的上限、**上下文窗口本身**。
-    最后一条最容易被忽略——窗口 8k 却要 32k 的输出，平台只会回你一个 400。
-    """
+def resolve_output_cap(settings: dict, model: str) -> int:
+    """仅控制生成长度，不借助猜测的上下文窗口限制输入。"""
     wanted = int((settings.get("advanced") or {}).get("maxTokens") or 4096)
     learned = ((settings.get("modelInfo") or {}).get(model) or {}).get("maxOutput")
-    cap = min(wanted, MAX_OUTPUT_CEILING, window)
+    cap = min(wanted, MAX_OUTPUT_CEILING)
     if isinstance(learned, (int, float)) and learned > 0:
         cap = min(cap, int(learned))
     return max(1, int(cap))
-
-
-def history_budget(window: int, output_reserve: int, safety_ratio: float = 0.1) -> int:
-    """预留输出与安全余量，剩余窗口用于人格、问题和历史原文。"""
-    return max(0, window - output_reserve - max(1024, round(window * safety_ratio)))

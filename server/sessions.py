@@ -19,6 +19,7 @@ def sessions_dir(data_dir):
 
 
 def session_path(data_dir, session_id: str):
+    """所有会话路径统一经过 ID 校验，避免请求参数形成目录穿越。"""
     if not isinstance(session_id, str) or not session_id or _ID_SAFE.search(session_id):
         raise ValueError("会话 id 只能包含字母、数字、中文、下划线和短横线")
     return sessions_dir(data_dir) / session_id / "info.json"
@@ -30,6 +31,7 @@ def messages_path(data_dir, session_id: str):
 
 @dataclass
 class Session:
+    """会话概况，seats 是当前提问对象；过去问过谁以原文中的快照为准。"""
     id: str
     title: str = DEFAULT_TITLE
     seats: list[dict] = field(default_factory=list)
@@ -38,6 +40,7 @@ class Session:
     rounds: int = 0
 
     def to_json(self) -> dict:
+        """磁盘与 HTTP 共用 camelCase 字段，内部时间字段使用 snake_case。"""
         return {
             "id": self.id,
             "title": self.title,
@@ -77,6 +80,11 @@ def create(data_dir, *, title: str = DEFAULT_TITLE,
 
 
 def normalize_seats(seats: list[dict]) -> list[dict]:
+    """规范化本会话配置；实体不可重复，seatNo 必须为互不重复的正整数。
+
+    lifeId 关联持续身份，seatNo 只控制本会话的展示与流事件归属。
+    providerId / model 留空时，调用层使用实体默认配置。
+    """
     out = []
     seen = set()
     for i, s in enumerate(seats):
@@ -108,6 +116,7 @@ def save(data_dir, session: Session) -> None:
 
 
 def list_all(data_dir) -> list[Session]:
+    """仅读取 info.json 并按活动时间排序，避免启动时读取全部聊天原文。"""
     d = sessions_dir(data_dir)
     if not d.exists():
         return []
@@ -125,6 +134,7 @@ def summary(session: Session) -> dict:
 
 
 def delete(data_dir, session_id: str) -> bool:
+    """确认目录归属后删除本会话文件；不会遍历或删除 humans 中的个人经历。"""
     p = session_path(data_dir, session_id)
     if p.parent.resolve().parent != sessions_dir(data_dir).resolve():
         raise ValueError("会话目录越界")
@@ -144,7 +154,11 @@ def read_messages(data_dir, sid: str) -> list[dict]:
 
 
 def personal_message(message: dict, life_id: str) -> dict | None:
-    """只把实际收到的问题和本人的回答写入个人经历。"""
+    """【核心】决定一条会话消息是否属于某个实体的个人历史。
+
+    问题仅属于当时参与者，回答仅属于回答者；返回新字典，不修改会话记录。
+    不把其他人的回答写进个人历史，也不把问题的参与者名单加入模型上下文。
+    """
     if message["kind"] == "you":
         if not any(p["lifeId"] == life_id for p in message.get("participants", [])):
             return None
@@ -155,7 +169,11 @@ def personal_message(message: dict, life_id: str) -> dict | None:
 
 
 def round_views(messages: list[dict], *, before: str = "", limit: int = 3) -> dict:
-    """按稳定轮次 ID 展示历史；没有收尾的调用明确显示未完成。"""
+    """将会话原文转成页面轮次，before 指向上一页最早的 roundId。
+
+    分页从最近轮次向前取，每页内部仍按时间顺序展示；历史参与者从原文还原，
+    因而切换当前席位、删除实体之后，旧回答仍能按当时的身份显示。
+    """
     rounds = []
     by_id = {}
     for entry in messages:
@@ -173,6 +191,7 @@ def round_views(messages: list[dict], *, before: str = "", limit: int = 3) -> di
         rounds = rounds[:index]
     limit = max(1, min(100, limit))
     page = rounds[-limit:]
+    # 未收到某位的最终记录时展示占位错误，区分“无正文”与“尚无完整回答”。
     for r in page:
         answered = {a["lifeId"] for a in r["answers"]}
         r["answers"].extend({**p, "content": "", "error": "未收到完整回答（调用仍在进行或已中断）"}

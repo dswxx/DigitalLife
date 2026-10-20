@@ -16,13 +16,15 @@ import httpx
 from server.main import API_VERSION, create_app
 from server.runtime import Runtime
 from tests import mock_upstream as mock
-from tests.support import ROOT, running_server, seed_data
+from tests.support import ROOT, fill_history, running_server, seed_data
 
 TOKEN = "http-test-token"
 
 
 class HttpTests(unittest.TestCase):
+    """应用和假上游均走真实本机 socket，覆盖流式并发与重启后的持久化。"""
     def setUp(self):
+        # ExitStack 逆序清理：先关客户端和应用，再停上游，最后回收临时数据目录。
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory(prefix=".tmp-http-", dir=ROOT / "tests")))
@@ -50,6 +52,7 @@ class HttpTests(unittest.TestCase):
         self.assertTrue(all(l._history is None for l in self.app.state.runtime.lives.values()))
 
     def test_real_stream_parallel_and_restart_records(self):
+        # 记录上游实际收发时间；两个请求区间重叠才算发生了网络并发。
         mock.set_script("model-a", text="甲的答案", chunk_delay=0.005)
         mock.set_script("model-b", text="乙的答案", chunk_delay=0.005)
         events = self.ask()
@@ -128,6 +131,37 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(self.client.get(f"/api/lives/{lid}/{suffix}").status_code, 404)
         self.assertIn(self.client.post(f"/api/lives/{lid}/history/compact", json={}).status_code, (404, 405))
         self.assertEqual(self.client.get("/api/settings").status_code, 404)
+
+    def test_auto_compression_then_answer_over_real_http(self):
+        runtime = self.app.state.runtime
+        runtime.update_settings(advanced={"maxTokens": 256})
+        fill_history(runtime, runtime.sessions[self.session.id])
+        before = runtime.lives[self.lives[0].id].history_path().read_bytes()
+        mock.set_script("model-a", context_chars=1000, text="继续交流的甲答案", summary_text="甲的既往观点与用户意图。")
+        mock.set_script("model-b", context_chars=1000, text="继续交流的乙答案", summary_text="乙的既往观点与用户意图。")
+        events = self.ask("压缩后的新问题")
+        self.assertTrue(any("正在压缩" in e.get("text", "") for e in events))
+        self.assertEqual({e["content"] for e in events if e["type"] == "seat_done"}, {"继续交流的甲答案", "继续交流的乙答案"})
+        for model in ("model-a", "model-b"):
+            requests = mock.requests_for(model)
+            self.assertGreater(len(requests), 3)
+            self.assertIn("压缩后的新问题", requests[0]["body"]["messages"][-1]["content"])
+            self.assertIn("此前对话摘要", requests[-1]["body"]["messages"][0]["content"])
+            self.assertEqual(requests[-1]["body"]["messages"][-1]["content"], "压缩后的新问题")
+        self.assertTrue(runtime.lives[self.lives[0].id].history_path().read_bytes().startswith(before))
+
+    def test_summary_failure_keeps_history_and_other_model_continues(self):
+        runtime = self.app.state.runtime
+        runtime.update_settings(advanced={"maxTokens": 256})
+        fill_history(runtime, runtime.sessions[self.session.id])
+        mock.set_script("model-a", context_chars=1000, summary_text="不完整", summary_finish="length")
+        mock.set_script("model-b", text="另一位正常回答")
+        answers = [e for e in self.ask() if e["type"] == "seat_done"]
+        self.assertTrue(any("压缩未生成完整摘要" in a["error"] for a in answers))
+        self.assertTrue(any(a["content"] == "另一位正常回答" for a in answers))
+        self.assertFalse((runtime.lives[self.lives[0].id].root / "context.json").exists())
+        self.assertGreaterEqual(len(mock.requests_for("model-a")), 3)
+        self.assertEqual(len(mock.requests_for("model-b")), 1)
 
 
 if __name__ == "__main__":
